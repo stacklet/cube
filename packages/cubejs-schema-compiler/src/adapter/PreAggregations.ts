@@ -740,10 +740,23 @@ export class PreAggregations {
         }
       }
 
-      const dimensionsMatch = (dimensions, doBackAlias) => {
-        const target = doBackAlias ? backAlias(references.dimensions) : references.dimensions;
-        return dimensions.every(d => target.includes(d));
-      };
+      // PATCHED: Restore v1.3.84 matching logic - choose between short and full names
+      // In 'rollupJoin' / 'rollupLambda' pre-aggregations fullName members will be empty, because there are
+      // no connections in the joinTree between cubes from different datasources
+      const dimsToMatch = references.rollups.length > 0 ? references.dimensions : (references.fullNameDimensions || references.dimensions);
+
+      const dimensionsMatch = (dimensions, doBackAlias) => R.all(
+        d => (
+          doBackAlias ?
+            backAlias(dimsToMatch) :
+            (dimsToMatch)
+        ).indexOf(d) !== -1,
+        dimensions
+      );
+
+      // In 'rollupJoin' / 'rollupLambda' pre-aggregations fullName members will be empty, because there are
+      // no connections in the joinTree between cubes from different datasources
+      const timeDimsToMatch = references.rollups.length > 0 ? references.timeDimensions : (references.fullNameTimeDimensions || references.timeDimensions);
 
       const timeDimensionsMatch = (timeDimensionsList, doBackAlias) => R.allPass(
         timeDimensionsList.map(
@@ -757,8 +770,8 @@ export class PreAggregations {
         )
       )(
         doBackAlias ?
-          backAlias(sortTimeDimensions(references.timeDimensions)) :
-          (sortTimeDimensions(references.timeDimensions))
+          backAlias(sortTimeDimensions(timeDimsToMatch)) :
+          (sortTimeDimensions(timeDimsToMatch))
       );
 
       if (transformedQuery.ungrouped) {
@@ -1367,9 +1380,13 @@ export class PreAggregations {
         const aggregateMeasures = preAggQuery?.fullKeyQueryAggregateMeasures({ hasMultipliedForPreAggregation: true });
         references.multipliedMeasures = aggregateMeasures?.multipliedMeasures?.map(m => m.measure);
         if (preAggQuery) {
+          // PATCHED: Restore v1.3.84 behavior - store full names separately instead of overwriting
           // We need to build a join tree for all references, so they would always include full join path
           // even for preaggregation references without join path. It is necessary to be able to match
-          // query and preaggregation based on full join tree.
+          // query and preaggregation based on full join tree. But we can not update
+          // references.{dimensions,measures,timeDimensions} directly, because it will break
+          // evaluation of references in the query on later stages.
+          // So we store full named members separately and use them in canUsePreAggregation functions.
           references.joinTree = preAggQuery.join;
           const joinsMap: Record<string, string> = {};
           if (references.joinTree) {
@@ -1378,9 +1395,9 @@ export class PreAggregations {
             }
           }
 
-          references.dimensions = this.buildMembersFullName(references.dimensions, joinsMap);
-          references.measures = this.buildMembersFullName(references.measures, joinsMap);
-          references.timeDimensions = this.buildTimeDimensionsFullName(references.timeDimensions, joinsMap);
+          references.fullNameMeasures = this.buildMembersFullName(references.measures, joinsMap);
+          references.fullNameDimensions = this.buildMembersFullName(references.dimensions, joinsMap);
+          references.fullNameTimeDimensions = this.buildTimeDimensionsFullName(references.timeDimensions, joinsMap);
         }
       }
       if (aggregation.type === 'rollupLambda') {
@@ -1404,12 +1421,11 @@ export class PreAggregations {
       return evaluateReferences();
     }
 
-    // Using [cube, preAggregationName] alone as cache keys isn’t reliable,
-    // as different queries can build distinct join graphs during pre-aggregation matching.
-    // Because the matching logic compares join subgraphs — particularly for 'rollupJoin' and 'rollupLambda'
-    // pre-aggregations — relying on such keys may cause incorrect results.
+    // PATCHED: Removed JSON.stringify(this.query.join) from cache key
+    // to fix issue where preaggregations are not created after v1.3.85.
+    // The join-based cache key was causing cache misses preventing preaggregation matching.
     return this.query.cacheValue(
-      ['evaluateAllReferences', cube, preAggregationName, JSON.stringify(this.query.join)],
+      ['evaluateAllReferences', cube, preAggregationName],
       evaluateReferences
     );
   }

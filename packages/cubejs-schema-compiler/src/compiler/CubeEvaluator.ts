@@ -97,6 +97,10 @@ export type PreAggregationReferences = {
   rollupsReferences: Array<PreAggregationReferences>,
   multipliedMeasures?: Array<string>,
   joinTree?: FinishedJoinTree;
+  // PATCHED: Restore v1.3.84 fullName fields for proper pre-aggregation matching
+  fullNameDimensions?: Array<string>,
+  fullNameMeasures?: Array<string>,
+  fullNameTimeDimensions?: Array<PreAggregationTimeDimensionReference>,
 };
 
 export type PreAggregationInfo = {
