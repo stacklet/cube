@@ -20,7 +20,6 @@
     "@cubejs-backend/duckdb-driver": "1.6.6",
     "@cubejs-backend/elasticsearch-driver": "1.6.6",
     "@cubejs-backend/firebolt-driver": "1.6.6",
-    "@cubejs-backend/hive-driver": "1.6.6",
     "@cubejs-backend/ksql-driver": "1.6.6",
     "@cubejs-backend/materialize-driver": "1.6.6",
     "@cubejs-backend/mongobi-driver": "1.6.6",
