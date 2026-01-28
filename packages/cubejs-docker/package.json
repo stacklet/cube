@@ -13,7 +13,6 @@
     "@cubejs-backend/bigquery-driver": "1.6.6",
     "@cubejs-backend/clickhouse-driver": "1.6.6",
     "@cubejs-backend/crate-driver": "1.6.6",
-    "@cubejs-backend/databricks-jdbc-driver": "1.6.6",
     "@cubejs-backend/dbt-schema-extension": "1.6.6",
     "@cubejs-backend/dremio-driver": "1.6.6",
     "@cubejs-backend/druid-driver": "1.6.6",
