@@ -43,6 +43,7 @@
     "form-data": "^2.5.4",
     "tar": "7.5.3",
     "@octokit/endpoint": "9.0.6",
-    "browserslist": "^4.25.3"
+    "browserslist": "^4.25.3",
+    "@smithy/config-resolver": "4.4.0"
   }
 }
