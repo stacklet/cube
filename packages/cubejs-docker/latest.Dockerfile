@@ -7,6 +7,18 @@ RUN yarn policies set-version v1.22.22
 # Yarn v1 uses aggressive timeouts with summing time spending on fs, https://github.com/yarnpkg/yarn/issues/4890
 RUN yarn config set network-timeout 120000 -g
 
+# Upgrade tar in npm's global installation to fix CVE-2026-23745
+# Download tar@7.5.3 and replace npm's bundled tar packages
+RUN npm pack tar@7.5.3 --pack-destination=/tmp && \
+    cd /tmp && tar -xzf tar-7.5.3.tgz && \
+    rm -rf /usr/local/lib/node_modules/npm/node_modules/tar && \
+    rm -rf /usr/local/lib/node_modules/npm/node_modules/node-gyp/node_modules/tar && \
+    rm -rf /usr/local/lib/node_modules/npm/node_modules/cacache/node_modules/tar && \
+    cp -r package /usr/local/lib/node_modules/npm/node_modules/tar && \
+    cp -r package /usr/local/lib/node_modules/npm/node_modules/node-gyp/node_modules/tar && \
+    cp -r package /usr/local/lib/node_modules/npm/node_modules/cacache/node_modules/tar && \
+    rm -rf /tmp/tar-7.5.3.tgz /tmp/package
+
 # Required for node-oracledb to buld on ARM64
 RUN apt-get update \
     # python3 package is necessary to install `python3` executable for node-gyp
@@ -34,6 +46,18 @@ RUN DEBIAN_FRONTEND=noninteractive \
     && rm -rf /var/lib/apt/lists/*
 
 RUN yarn policies set-version v1.22.22
+
+# Upgrade tar in npm's global installation to fix CVE-2026-23745
+# Download tar@7.5.3 and replace npm's bundled tar packages
+RUN npm pack tar@7.5.3 --pack-destination=/tmp && \
+    cd /tmp && tar -xzf tar-7.5.3.tgz && \
+    rm -rf /usr/local/lib/node_modules/npm/node_modules/tar && \
+    rm -rf /usr/local/lib/node_modules/npm/node_modules/node-gyp/node_modules/tar && \
+    rm -rf /usr/local/lib/node_modules/npm/node_modules/cacache/node_modules/tar && \
+    cp -r package /usr/local/lib/node_modules/npm/node_modules/tar && \
+    cp -r package /usr/local/lib/node_modules/npm/node_modules/node-gyp/node_modules/tar && \
+    cp -r package /usr/local/lib/node_modules/npm/node_modules/cacache/node_modules/tar && \
+    rm -rf /tmp/tar-7.5.3.tgz /tmp/package
 
 ENV NODE_ENV=production
 

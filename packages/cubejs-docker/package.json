@@ -40,6 +40,8 @@
     "typescript": "~5.2.2"
   },
   "resolutions": {
-    "colors": "1.4.0"
+    "colors": "1.4.0",
+    "form-data": "^2.5.4",
+    "tar": "7.5.3"
   }
 }

@@ -70,6 +70,7 @@
     "es5-ext": "0.10.53",
     "lodash": "^4.17.0",
     "form-data": "^2.5.4",
+    "tar": "7.5.3",
     "@types/node": "^20",
     "@types/ramda": "0.27.40",
     "thrift": "0.20.0"
