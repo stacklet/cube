@@ -33,6 +33,14 @@ RUN yarn install --prod \
     && rm -rf /cube/node_modules/duckdb/src \
     && yarn cache clean
 
+# Stacklet: overlay locally compiled dist files over npm-installed packages.
+# stacklet-patches/<pkg>-dist/ dirs are populated by scripts/build-docker.sh.
+COPY stacklet-patches/ /cube/stacklet-patches/
+RUN find /cube/stacklet-patches -maxdepth 1 -name '*-dist' -type d | while read d; do \
+      pkg=$(basename "$d" -dist); \
+      cp -r "$d/." "/cube/node_modules/@cubejs-backend/$pkg/dist/"; \
+    done && rm -rf /cube/stacklet-patches
+
 FROM node:22.22.0-bookworm-slim
 
 ARG IMAGE_VERSION=unknown
