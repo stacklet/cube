@@ -1,5 +1,6 @@
 node_modules
 .yarn
+packages/cubejs-docker/stacklet-patches/*-dist/
 .yarnrc
 /.idea
 /.vscode

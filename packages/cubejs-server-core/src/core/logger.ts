@@ -126,6 +126,12 @@ export const prodLogger = (level?: LogLevel) => (msg: string, params: ProdLogPar
 
   const logMessage = () => console.log(JSON.stringify({ message: msg, ...params }));
 
+  // Always emit regardless of log level — used by CloudWatch log metric filter
+  if (msg === 'Performing query completed') {
+    logMessage();
+    return;
+  }
+
   // eslint-disable-next-line default-case
   switch ((level || 'warn').toLowerCase()) {
     case 'trace': {
