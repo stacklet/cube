@@ -47,8 +47,12 @@ echo "==> Building Docker image $TAG..."
 docker build -t "$TAG" -f "$DOCKER_DIR/latest.Dockerfile" "$DOCKER_DIR"
 
 echo "==> Done: $TAG"
-echo ""
-echo "Verify the logger patch:"
-echo "  docker run --rm $TAG grep -c 'Performing query completed' \\"
-echo "    /cube/node_modules/@cubejs-backend/server-core/dist/src/core/logger.js"
-echo "  (expected: 2)"
+
+echo "==> Verifying logger patch..."
+COUNT=$(docker run --rm "$TAG" grep -c 'Performing query completed' \
+  /cube/node_modules/@cubejs-backend/server-core/dist/src/core/logger.js)
+if [ "$COUNT" -ne 2 ]; then
+  echo "ERROR: logger patch check failed (expected 2 matches, got $COUNT)"
+  exit 1
+fi
+echo "Logger patch OK ($COUNT matches)"
