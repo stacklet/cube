@@ -13,6 +13,7 @@ import {
   isFilePath,
   isSslKey,
   isSslCert,
+  LoggerFn,
 } from '@cubejs-backend/shared';
 import fs from 'fs';
 
@@ -146,13 +147,18 @@ const DbTypeValueMatcher: Record<string, ((v: any) => boolean)> = {
   text: () => true
 };
 
-/**
- * Base driver class.
- */
+export function createPoolName(driverName: string, dataSource: string, preAggregations: boolean = false): string {
+  if (preAggregations) {
+    return `${driverName}#${dataSource}@preAggregations`;
+  }
+
+  return `${driverName}#${dataSource}`;
+}
+
 export abstract class BaseDriver implements DriverInterface {
   private readonly testConnectionTimeoutValue: number = 10000;
 
-  protected logger: any;
+  protected logger?: LoggerFn;
 
   /**
    * Class constructor.
@@ -264,10 +270,10 @@ export abstract class BaseDriver implements DriverInterface {
     return 'columns.table_name';
   }
 
-  protected getSslOptions(dataSource: string): TLSConnectionOptions | undefined {
+  protected getSslOptions(dataSource: string, preAggregations?: boolean): TLSConnectionOptions | undefined {
     if (
-      getEnv('dbSsl', { dataSource }) ||
-      getEnv('dbSslRejectUnauthorized', { dataSource })
+      getEnv('dbSsl', { dataSource, preAggregations }) ||
+      getEnv('dbSslRejectUnauthorized', { dataSource, preAggregations })
     ) {
       const sslOptions = [{
         name: 'ca',
@@ -336,7 +342,7 @@ export abstract class BaseDriver implements DriverInterface {
         {}
       );
 
-      ssl.rejectUnauthorized = getEnv('dbSslRejectUnauthorized', { dataSource });
+      ssl.rejectUnauthorized = getEnv('dbSslRejectUnauthorized', { dataSource, preAggregations });
 
       return ssl;
     }
@@ -673,7 +679,7 @@ export abstract class BaseDriver implements DriverInterface {
     return cancelCombinator(fn);
   }
 
-  public setLogger(logger: any) {
+  public setLogger(logger: LoggerFn) {
     this.logger = logger;
   }
 

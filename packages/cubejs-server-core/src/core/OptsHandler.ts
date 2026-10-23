@@ -30,7 +30,7 @@ import {
 } from './types';
 import { lookupDriverClass, isDriver } from './DriverResolvers';
 import type { CubejsServerCore } from './server';
-import optionsValidate from './optionsValidate';
+import { validateOptions } from './optionsValidate';
 
 const { version } = require('../../../package.json');
 
@@ -46,8 +46,7 @@ export class OptsHandler {
     private createOptions: CreateOptions,
     private systemOptions?: SystemOptions,
   ) {
-    this.assertOptions(createOptions);
-    const options = cloneDeep(this.createOptions);
+    const options = this.sanitizeOptions(cloneDeep(this.createOptions));
     options.driverFactory = this.getDriverFactory(options);
     options.dbType = this.getDbType(options);
     this.initializedOptions = this.initializeCoreOptions(options);
@@ -64,6 +63,13 @@ export class OptsHandler {
   private decoratedFactory = false;
 
   /**
+   * Returns true if the user provided a custom driverFactory.
+   */
+  public isCustomDriverFactory(): boolean {
+    return !this.decoratedFactory;
+  }
+
+  /**
    * driverFactory function result type.
    */
   private driverFactoryType: undefined | 'BaseDriver' | 'DriverConfig';
@@ -74,10 +80,13 @@ export class OptsHandler {
   private initializedOptions: ServerCoreInitializedOptions;
 
   /**
-   * Assert create options.
+   * Validate and normalize create options.
    */
-  private assertOptions(opts: CreateOptions) {
-    optionsValidate(opts);
+  private sanitizeOptions<T extends CreateOptions>(opts: T): T {
+    const validated = validateOptions(opts);
+
+    // Probed for its throw: the only consumer is per-request code (normalizeQuery)
+    getEnv('defaultTimezone');
 
     if (
       !this.isDevMode() &&
@@ -106,6 +115,8 @@ export class OptsHandler {
     //     },
     //   );
     // }
+
+    return validated;
   }
 
   /**
@@ -203,6 +214,7 @@ export class OptsHandler {
   private defaultDriverFactory(ctx: DriverContext): DriverConfig {
     const type = <DatabaseType>getEnv('dbType', {
       dataSource: assertDataSource(ctx.dataSource),
+      preAggregations: ctx.preAggregations,
     });
     return { type };
   }
@@ -459,7 +471,8 @@ export class OptsHandler {
       externalDbType,
       externalDriverFactory,
       externalDialectFactory,
-      apiSecret: process.env.CUBEJS_API_SECRET,
+      apiSecret: getEnv('apiSecret'),
+      apiSecrets: getEnv('apiSecrets'),
       telemetry: getEnv('telemetry'),
       scheduledRefreshTimeZones: getEnv('scheduledRefreshTimezones'),
       scheduledRefreshContexts: async () => [null],

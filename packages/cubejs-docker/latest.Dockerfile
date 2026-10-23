@@ -1,4 +1,4 @@
-FROM node:22.22.0-bookworm-slim AS builder
+FROM node:22.23.4-bookworm-slim AS builder
 
 WORKDIR /cube
 COPY . .
@@ -46,7 +46,7 @@ RUN find /cube/stacklet-patches -maxdepth 1 -name '*-dist' -type d | while read 
       rm -rf "$target" && cp -r "$d" "$target" || exit 1; \
     done && rm -rf /cube/stacklet-patches
 
-FROM node:22.22.0-bookworm-slim
+FROM node:22.23.4-bookworm-slim
 
 ARG IMAGE_VERSION=unknown
 
@@ -73,6 +73,8 @@ RUN npm pack tar@7.5.3 --pack-destination=/tmp && \
     rm -rf /tmp/tar-7.5.3.tgz /tmp/package
 
 ENV NODE_ENV=production
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
 WORKDIR /cube
 

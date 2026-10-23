@@ -2,6 +2,7 @@
 import { get } from 'env-var';
 import { displayCLIWarning } from './cli';
 import { isNativeSupported } from './platform';
+import { canonicalTimezone } from './timezone';
 
 export class InvalidConfiguration extends Error {
   public constructor(key: string, value: any, description: string) {
@@ -101,19 +102,18 @@ export function assertDataSource(dataSource = 'default'): string {
 
 /**
  * Returns data source specific environment variable name.
- * @param origin Origin environment variable name.
- * @param dataSource Data source name.
  */
-export function keyByDataSource(origin: string, dataSource?: string): string {
+export function keyByDataSource(origin: string, dataSource?: string, preAggregations?: boolean): string {
   if (dataSource) assertDataSource(dataSource);
-  if (!isMultipleDataSources() || dataSource === 'default') {
-    return origin;
-  } else if (!dataSource) {
-    return origin;
+
+  let key: string;
+
+  if (!isMultipleDataSources() || dataSource === 'default' || !dataSource) {
+    key = origin;
   } else {
     const s = origin.split('CUBEJS_');
     if (s.length === 2) {
-      return `CUBEJS_DS_${dataSource.toUpperCase()}_${s[1]}`;
+      key = `CUBEJS_DS_${dataSource.toUpperCase()}_${s[1]}`;
     } else {
       throw new Error(
         `The ${
@@ -124,6 +124,55 @@ export function keyByDataSource(origin: string, dataSource?: string): string {
       );
     }
   }
+
+  if (preAggregations) {
+    const dsMatch = key.match(/^(CUBEJS_DS_[A-Z0-9_]+?_)(DB_|JDBC_|AWS_|DATABASE|FIREBOLT_)(.*)/);
+    if (dsMatch) {
+      return `${dsMatch[1]}PRE_AGGREGATIONS_${dsMatch[2]}${dsMatch[3]}`;
+    }
+
+    if (key.startsWith('CUBEJS_')) {
+      return key.replace(/^CUBEJS_/, 'CUBEJS_PRE_AGGREGATIONS_');
+    }
+  }
+
+  return key;
+}
+
+type DataSourceOpts = { dataSource: string, preAggregations?: boolean };
+
+/**
+ * Checks if at least one PRE_AGGREGATIONS env var is set for a given data source.
+ */
+export function hasPreAggregationsEnvVars(dataSource: string = 'default'): boolean {
+  if (dataSource === 'default') {
+    /**
+     * Non-credential env vars that share the CUBEJS_PRE_AGGREGATIONS_ prefix
+     * but should NOT trigger separate pre-aggregation credentials.
+     */
+    const PRE_AGGREGATIONS_NON_CREDENTIAL_KEYS = new Set([
+      'CUBEJS_PRE_AGGREGATIONS_SCHEMA',
+      'CUBEJS_PRE_AGGREGATIONS_BUILDER',
+      'CUBEJS_PRE_AGGREGATIONS_BACKOFF_MAX_TIME',
+      'CUBEJS_PRE_AGGREGATIONS_ALLOW_NON_STRICT_DATE_RANGE_MATCH',
+    ]);
+
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('CUBEJS_PRE_AGGREGATIONS_') && !PRE_AGGREGATIONS_NON_CREDENTIAL_KEYS.has(key)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith(`CUBEJS_DS_${dataSource.toUpperCase()}_PRE_AGGREGATIONS_`)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function asPortOrSocket(input: string, envName: string): number | string {
@@ -163,6 +212,7 @@ const variables: Record<string, (...args: any) => any> = {
   devMode: () => get('CUBEJS_DEV_MODE')
     .default('false')
     .asBoolStrict(),
+  logLevel: () => get('CUBEJS_LOG_LEVEL').asString(),
   port: () => asPortOrSocket(process.env.PORT || '4000', 'PORT'),
   tls: () => get('CUBEJS_ENABLE_TLS')
     .default('false')
@@ -236,13 +286,25 @@ const variables: Record<string, (...args: any) => any> = {
   },
   refreshWorkerConcurrency: () => get('CUBEJS_REFRESH_WORKER_CONCURRENCY')
     .asIntPositive(),
-  // eslint-disable-next-line consistent-return
   scheduledRefreshTimezones: () => {
-    const timezones = get('CUBEJS_SCHEDULED_REFRESH_TIMEZONES').asString();
+    const timezones = get('CUBEJS_SCHEDULED_REFRESH_TIMEZONES')
+      .default('')
+      .asArray()
+      .map(timezone => timezone.trim())
+      .filter(Boolean);
 
-    if (timezones) {
-      return timezones.split(',').map(t => t.trim());
-    }
+    return timezones.map(raw => {
+      const timezone = canonicalTimezone(raw);
+      if (!timezone) {
+        throw new InvalidConfiguration(
+          'CUBEJS_SCHEDULED_REFRESH_TIMEZONES',
+          raw,
+          'Must be a comma-separated list of valid IANA time zone names, e.g. UTC,America/Los_Angeles.'
+        );
+      }
+
+      return timezone;
+    });
   },
   preAggregationsBuilder: () => get('CUBEJS_PRE_AGGREGATIONS_BUILDER').asBool(),
   gracefulShutdown: () => get('CUBEJS_GRACEFUL_SHUTDOWN')
@@ -268,9 +330,6 @@ const variables: Record<string, (...args: any) => any> = {
     .asInt(),
   nativeSqlPlanner: () => get('CUBEJS_TESSERACT_SQL_PLANNER').default('false').asBool(),
   nativeSqlPlannerPreAggregations: () => get('CUBEJS_TESSERACT_PRE_AGGREGATIONS').default('false').asBool(),
-  nativeOrchestrator: () => get('CUBEJS_TESSERACT_ORCHESTRATOR')
-    .default('true')
-    .asBoolStrict(),
   transpilationWorkerThreads: () => {
     const enabled = get('CUBEJS_TRANSPILATION_WORKER_THREADS')
       .default('true')
@@ -297,9 +356,20 @@ const variables: Record<string, (...args: any) => any> = {
   nestedFoldersDelimiter: () => get('CUBEJS_NESTED_FOLDERS_DELIMITER')
     .default('')
     .asString(),
-  defaultTimezone: () => get('CUBEJS_DEFAULT_TIMEZONE')
-    .default('UTC')
-    .asString(),
+  defaultTimezone: () => {
+    const value = (get('CUBEJS_DEFAULT_TIMEZONE').asString() || '').trim() || 'UTC';
+
+    const timezone = canonicalTimezone(value);
+    if (!timezone) {
+      throw new InvalidConfiguration(
+        'CUBEJS_DEFAULT_TIMEZONE',
+        value,
+        'Must be a valid IANA time zone name, e.g. UTC or America/Los_Angeles.'
+      );
+    }
+
+    return timezone;
+  },
   preciseDecimalInCubestore: () => get('CUBEJS_DB_PRECISE_DECIMAL_IN_CUBESTORE')
     .default('false')
     .asBoolStrict(),
@@ -322,12 +392,9 @@ const variables: Record<string, (...args: any) => any> = {
   /**
    * Driver type.
    */
-  dbType: ({
-    dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_TYPE', dataSource)]
+  dbType: ({ dataSource }: DataSourceOpts) => (
+    // We don't support different driverType for pre-aggregations right now
+    get(keyByDataSource('CUBEJS_DB_TYPE', dataSource, false)).asString()
   ),
 
   /**
@@ -335,12 +402,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbSsl: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => {
-    const val = process.env[
-      keyByDataSource('CUBEJS_DB_SSL', dataSource)
-    ] || 'false';
+    preAggregations,
+  }: DataSourceOpts) => {
+    const val = get(keyByDataSource('CUBEJS_DB_SSL', dataSource, preAggregations)).default('false').asString();
     if (val.toLocaleLowerCase() === 'true') {
       return true;
     } else if (val.toLowerCase() === 'false') {
@@ -359,12 +423,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbSslRejectUnauthorized: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => {
-    const val = process.env[
-      keyByDataSource('CUBEJS_DB_SSL_REJECT_UNAUTHORIZED', dataSource)
-    ] || 'false';
+    preAggregations,
+  }: DataSourceOpts) => {
+    const val = get(keyByDataSource('CUBEJS_DB_SSL_REJECT_UNAUTHORIZED', dataSource, preAggregations)).default('false').asString();
     if (val.toLocaleLowerCase() === 'true') {
       return true;
     } else if (val.toLowerCase() === 'false') {
@@ -383,12 +444,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbUrl: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_URL', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_URL', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -396,12 +454,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbHost: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_HOST', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_HOST', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -412,12 +467,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbUseSelectTestConnection: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => {
-    const val = process.env[
-      keyByDataSource('CUBEJS_DB_USE_SELECT_TEST_CONNECTION', dataSource)
-    ] || 'false';
+    preAggregations,
+  }: DataSourceOpts) => {
+    const val = get(keyByDataSource('CUBEJS_DB_USE_SELECT_TEST_CONNECTION', dataSource, preAggregations)).default('false').asString();
     if (val.toLocaleLowerCase() === 'true') {
       return true;
     } else if (val.toLowerCase() === 'false') {
@@ -434,37 +486,29 @@ const variables: Record<string, (...args: any) => any> = {
   /**
    * Kafka host for direct downloads from ksqlDb
    */
-  dbKafkaHost: ({ dataSource }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_KAFKA_HOST', dataSource)]
+  dbKafkaHost: ({ dataSource, preAggregations }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_KAFKA_HOST', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Kafka user for direct downloads from ksqlDb
    */
-  dbKafkaUser: ({ dataSource }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_KAFKA_USER', dataSource)]
+  dbKafkaUser: ({ dataSource, preAggregations }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_KAFKA_USER', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Kafka password for direct downloads from ksqlDb
    */
-  dbKafkaPass: ({ dataSource }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_KAFKA_PASS', dataSource)]
+  dbKafkaPass: ({ dataSource, preAggregations }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_KAFKA_PASS', dataSource, preAggregations)).asString()
   ),
 
   /**
    * `true` if Kafka should use SASL_SSL for direct downloads from ksqlDb
    */
-  dbKafkaUseSsl: ({ dataSource }: {
-    dataSource: string,
-  }) => (
-    get(keyByDataSource('CUBEJS_DB_KAFKA_USE_SSL', dataSource))
+  dbKafkaUseSsl: ({ dataSource, preAggregations }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_KAFKA_USE_SSL', dataSource, preAggregations))
       .default('false')
       .asBool()
   ),
@@ -474,10 +518,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbDomain: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_DOMAIN', dataSource)]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DOMAIN', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -485,17 +528,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbPort: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_PORT', dataSource)]
-      ? parseInt(
-        `${
-          process.env[keyByDataSource('CUBEJS_DB_PORT', dataSource)]
-        }`,
-        10,
-      )
-      : undefined
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_PORT', dataSource, preAggregations)).asInt()
   ),
 
   /**
@@ -503,10 +538,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbSocketPath: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_SOCKET_PATH', dataSource)]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SOCKET_PATH', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -514,10 +548,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbUser: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_USER', dataSource)]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_USER', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -525,10 +558,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbPass: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_PASS', dataSource)]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_PASS', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -537,13 +569,13 @@ const variables: Record<string, (...args: any) => any> = {
   dbName: ({
     required,
     dataSource,
+    preAggregations,
   }: {
     dataSource: string,
     required?: boolean,
+    preAggregations?: boolean,
   }) => {
-    const val = process.env[
-      keyByDataSource('CUBEJS_DB_NAME', dataSource)
-    ];
+    const val = get(keyByDataSource('CUBEJS_DB_NAME', dataSource, preAggregations)).asString();
     if (required && !val) {
       throw new Error(
         `The ${
@@ -561,9 +593,11 @@ const variables: Record<string, (...args: any) => any> = {
   dbSchema: ({
     required,
     dataSource,
+    preAggregations,
   }: {
     dataSource: string,
     required?: boolean,
+    preAggregations?: boolean,
   }) => {
     console.warn(
       `The ${
@@ -572,9 +606,7 @@ const variables: Record<string, (...args: any) => any> = {
         keyByDataSource('CUBEJS_DB_NAME', dataSource)
       } instead.`
     );
-    const val = process.env[
-      keyByDataSource('CUBEJS_DB_SCHEMA', dataSource)
-    ];
+    const val = get(keyByDataSource('CUBEJS_DB_SCHEMA', dataSource, preAggregations)).asString();
     if (required && !val) {
       throw new Error(
         `The ${
@@ -592,9 +624,11 @@ const variables: Record<string, (...args: any) => any> = {
   dbDatabase: ({
     required,
     dataSource,
+    preAggregations,
   }: {
     dataSource: string,
     required?: boolean,
+    preAggregations?: boolean,
   }) => {
     console.warn(
       `The ${
@@ -603,9 +637,7 @@ const variables: Record<string, (...args: any) => any> = {
         keyByDataSource('CUBEJS_DB_NAME', dataSource)
       } instead.`
     );
-    const val = process.env[
-      keyByDataSource('CUBEJS_DATABASE', dataSource)
-    ];
+    const val = get(keyByDataSource('CUBEJS_DATABASE', dataSource, preAggregations)).asString();
     if (required && !val) {
       throw new Error(
         `The ${
@@ -621,19 +653,20 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbMaxPoolSize: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_MAX_POOL', dataSource)]
-      ? parseInt(
-        `${
-          process.env[
-            keyByDataSource('CUBEJS_DB_MAX_POOL', dataSource)
-          ]
-        }`,
-        10,
-      )
-      : undefined
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_MAX_POOL', dataSource, preAggregations)).asInt()
+  ),
+
+  /**
+   * Database min pool size.
+   */
+  dbMinPoolSize: ({
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_MIN_POOL', dataSource, preAggregations))
+      .asIntPositive()
   ),
 
   /**
@@ -642,11 +675,10 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbPollMaxInterval: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => {
-    const key = keyByDataSource('CUBEJS_DB_POLL_MAX_INTERVAL', dataSource);
-    const value = process.env[key] || '5s';
+    preAggregations,
+  }: DataSourceOpts) => {
+    const key = keyByDataSource('CUBEJS_DB_POLL_MAX_INTERVAL', dataSource, preAggregations);
+    const value = get(keyByDataSource('CUBEJS_DB_POLL_MAX_INTERVAL', dataSource, preAggregations)).default('5s').asString();
     return convertTimeStrToSeconds(value, key);
   },
 
@@ -656,11 +688,10 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbPollTimeout: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => {
-    const key = keyByDataSource('CUBEJS_DB_POLL_TIMEOUT', dataSource);
-    const value = process.env[key];
+    preAggregations,
+  }: DataSourceOpts) => {
+    const key = keyByDataSource('CUBEJS_DB_POLL_TIMEOUT', dataSource, preAggregations);
+    const value = get(keyByDataSource('CUBEJS_DB_POLL_TIMEOUT', dataSource, preAggregations)).asString();
     if (value) {
       return convertTimeStrToSeconds(value, key);
     } else {
@@ -678,11 +709,13 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbQueryTimeout: ({
     dataSource,
+    preAggregations,
   }: {
     dataSource?: string,
+    preAggregations?: boolean,
   } = {}) => {
-    const key = keyByDataSource('CUBEJS_DB_QUERY_TIMEOUT', dataSource);
-    const value = process.env[key] || '10m';
+    const key = keyByDataSource('CUBEJS_DB_QUERY_TIMEOUT', dataSource, preAggregations);
+    const value = get(keyByDataSource('CUBEJS_DB_QUERY_TIMEOUT', dataSource, preAggregations)).default('10m').asString();
     return convertTimeStrToSeconds(value, key);
   },
 
@@ -700,6 +733,14 @@ const variables: Record<string, (...args: any) => any> = {
   dbQueryDefaultLimit: (): number => get('CUBEJS_DB_QUERY_DEFAULT_LIMIT')
     .default(10000)
     .asInt(),
+
+  /**
+   * Whether queries are executed automatically without requiring an
+   * explicit user confirmation. Only used in Cube Cloud.
+   */
+  autoRunMode: (): boolean => get('CUBEJS_AUTO_RUN_MODE')
+    .default('true')
+    .asBoolStrict(),
 
   /**
    * Query stream `highWaterMark` value.
@@ -752,6 +793,13 @@ const variables: Record<string, (...args: any) => any> = {
     .asIntPositive(),
 
   /**
+   * Maximum time for exponential backoff for pre-aggs (in seconds)
+   */
+  preAggBackoffMaxTime: (): number => get('CUBEJS_PRE_AGGREGATIONS_BACKOFF_MAX_TIME')
+    .default(10 * 60)
+    .asIntPositive(),
+
+  /**
    * Expire time for touch records
    */
   dropPreAggregationsWithoutTouch: (): boolean => get('CUBEJS_DROP_PRE_AGG_WITHOUT_TOUCH')
@@ -777,10 +825,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   jdbcUrl: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_JDBC_URL', dataSource)]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_JDBC_URL', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -788,10 +835,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   jdbcDriver: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_JDBC_DRIVER', dataSource)]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_JDBC_DRIVER', dataSource, preAggregations)).asString()
   ),
 
   /** ****************************************************************
@@ -803,10 +849,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportBucketCsvEscapeSymbol: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_CSV_ESCAPE_SYMBOL', dataSource)]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_CSV_ESCAPE_SYMBOL', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -815,13 +860,13 @@ const variables: Record<string, (...args: any) => any> = {
   dbExportBucketType: ({
     supported,
     dataSource,
+    preAggregations,
   }: {
     supported: ('s3' | 'gcp' | 'azure')[],
     dataSource: string,
+    preAggregations?: boolean,
   }) => {
-    const val = process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_TYPE', dataSource)
-    ];
+    const val = get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_TYPE', dataSource, preAggregations)).asString();
     if (
       val &&
       supported &&
@@ -841,10 +886,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportBucket: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_EXPORT_BUCKET', dataSource)]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -853,12 +897,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportBucketMountDir: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_MOUNT_DIR', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_MOUNT_DIR', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -866,12 +907,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportBucketAwsKey: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AWS_KEY', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AWS_KEY', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -879,12 +917,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportBucketAwsSecret: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AWS_SECRET', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AWS_SECRET', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -892,12 +927,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportBucketAwsRegion: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AWS_REGION', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AWS_REGION', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -905,12 +937,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportBucketAzureKey: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_KEY', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_KEY', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -918,12 +947,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportAzureSasToken: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_SAS_TOKEN', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_SAS_TOKEN', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -931,12 +957,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportBucketAzureClientId: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_CLIENT_ID', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_CLIENT_ID', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -944,12 +967,9 @@ const variables: Record<string, (...args: any) => any> = {
     */
   dbExportBucketAzureClientSecret: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_CLIENT_SECRET', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_CLIENT_SECRET', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -957,12 +977,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportBucketAzureTokenFilePAth: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_FEDERATED_TOKEN_FILE', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_FEDERATED_TOKEN_FILE', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -970,12 +987,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportBucketAzureTenantId: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_TENANT_ID', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_AZURE_TENANT_ID', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -983,12 +997,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportIntegration: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_INTEGRATION', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_INTEGRATION', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -996,12 +1007,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbExportGCSCredentials: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => {
-    const credentials = process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_GCS_CREDENTIALS', dataSource)
-    ];
+    preAggregations,
+  }: DataSourceOpts) => {
+    const credentials = get(keyByDataSource('CUBEJS_DB_EXPORT_GCS_CREDENTIALS', dataSource, preAggregations)).asString();
     if (credentials) {
       return JSON.parse(
         Buffer.from(credentials, 'base64').toString('utf8')
@@ -1020,33 +1028,42 @@ const variables: Record<string, (...args: any) => any> = {
    * @see https://dev.mysql.com/doc/refman/8.4/en/date-and-time-functions.html#function_convert-tz
    * @see https://dev.mysql.com/doc/refman/8.4/en/time-zone-support.html
    */
-  mysqlUseNamedTimezones: ({ dataSource }: { dataSource: string }) => {
-    const val = process.env[
-      keyByDataSource(
-        'CUBEJS_DB_MYSQL_USE_NAMED_TIMEZONES',
-        dataSource,
-      )
-    ];
+  mysqlUseNamedTimezones: ({ dataSource, preAggregations }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_MYSQL_USE_NAMED_TIMEZONES', dataSource, preAggregations))
+      // It's true in schema-compiler integration tests
+      .default('false')
+      .asBool()
+  ),
 
-    if (val) {
-      if (val.toLocaleLowerCase() === 'true') {
-        return true;
-      } else if (val.toLowerCase() === 'false') {
-        return false;
-      } else {
-        throw new TypeError(
-          `The ${
-            keyByDataSource(
-              'CUBEJS_DB_MYSQL_USE_NAMED_TIMEZONES',
-              dataSource,
-            )
-          } must be either 'true' or 'false'.`
-        );
-      }
-    } else {
-      return false;
-    }
-  },
+  /**
+   * Use the generated (recursive CTE based) time series for the Tesseract SQL
+   * planner instead of the portable VALUES/UNION ALL series. Defaults to TRUE.
+   * Recursive CTEs require MySQL 8.0+ — set this to FALSE for MySQL < 8.0,
+   * which has no CTE support. When disabled, time series are materialized as a
+   * VALUES list.
+   */
+  mysqlUseGeneratedTimeSeries: ({ dataSource, preAggregations }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_MYSQL_USE_GENERATED_TIME_SERIES', dataSource, preAggregations))
+      .default('true')
+      .asBool()
+  ),
+
+  /** ****************************************************************
+   * MSSQL Driver                                                    *
+   ***************************************************************** */
+
+  /**
+   * Use named timezones for date/time conversions via AT TIME ZONE.
+   * Defaults to FALSE, meaning that numeric offsets for timezone will be used.
+   *
+   * @see https://learn.microsoft.com/en-us/sql/t-sql/queries/at-time-zone-transact-sql
+   */
+  mssqlUseNamedTimezones: ({ dataSource, preAggregations }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_MSSQL_USE_NAMED_TIMEZONES', dataSource, preAggregations))
+      // It's true in schema-compiler integration tests
+      .default('false')
+      .asBool()
+  ),
 
   /** ****************************************************************
    * Databricks Driver                                               *
@@ -1057,12 +1074,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   databricksUrl: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => {
-    const val = process.env[
-      keyByDataSource('CUBEJS_DB_DATABRICKS_URL', dataSource)
-    ];
+    preAggregations,
+  }: DataSourceOpts) => {
+    const val = get(keyByDataSource('CUBEJS_DB_DATABRICKS_URL', dataSource, preAggregations)).asString();
     if (!val) {
       throw new Error(
         `The ${
@@ -1078,12 +1092,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   databricksToken: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DATABRICKS_TOKEN', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DATABRICKS_TOKEN', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -1092,23 +1103,17 @@ const variables: Record<string, (...args: any) => any> = {
    */
   databricksCatalog: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => process.env[
-    keyByDataSource('CUBEJS_DB_DATABRICKS_CATALOG', dataSource)
-  ],
+    preAggregations,
+  }: DataSourceOpts) => get(keyByDataSource('CUBEJS_DB_DATABRICKS_CATALOG', dataSource, preAggregations)).asString(),
 
   /**
    * Databricks OAuth Client ID (Same as the service principal UUID)
    */
   databricksOAuthClientId: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DATABRICKS_OAUTH_CLIENT_ID', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DATABRICKS_OAUTH_CLIENT_ID', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -1116,12 +1121,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   databricksOAuthClientSecret: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DATABRICKS_OAUTH_CLIENT_SECRET', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DATABRICKS_OAUTH_CLIENT_SECRET', dataSource, preAggregations)).asString()
   ),
 
   /** ****************************************************************
@@ -1132,104 +1134,86 @@ const variables: Record<string, (...args: any) => any> = {
    * Athena AWS key.
    */
   athenaAwsKey: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
     // TODO (buntarb): this name is a common. Deprecate and replace?
-    process.env[keyByDataSource('CUBEJS_AWS_KEY', dataSource)]
+    get(keyByDataSource('CUBEJS_AWS_KEY', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Athena AWS secret.
    */
   athenaAwsSecret: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
     // TODO (buntarb): this name is a common. Deprecate and replace?
-    process.env[keyByDataSource('CUBEJS_AWS_SECRET', dataSource)]
+    get(keyByDataSource('CUBEJS_AWS_SECRET', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Athena AWS region.
    */
   athenaAwsRegion: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
     // TODO (buntarb): this name is a common. Deprecate and replace?
-    process.env[keyByDataSource('CUBEJS_AWS_REGION', dataSource)]
+    get(keyByDataSource('CUBEJS_AWS_REGION', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Athena AWS S3 output location.
    */
   athenaAwsS3OutputLocation: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
     // TODO (buntarb): this name is a common. Deprecate and replace?
-    process.env[
-      keyByDataSource('CUBEJS_AWS_S3_OUTPUT_LOCATION', dataSource)
-    ]
+    get(keyByDataSource('CUBEJS_AWS_S3_OUTPUT_LOCATION', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Athena AWS workgroup.
    */
   athenaAwsWorkgroup: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
     // TODO (buntarb): Deprecate and replace?
-    process.env[
-      keyByDataSource('CUBEJS_AWS_ATHENA_WORKGROUP', dataSource)
-    ]
+    get(keyByDataSource('CUBEJS_AWS_ATHENA_WORKGROUP', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Athena AWS Catalog.
    */
   athenaAwsCatalog: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
     // TODO (buntarb): Deprecate and replace?
-    process.env[
-      keyByDataSource('CUBEJS_AWS_ATHENA_CATALOG', dataSource)
-    ]
+    get(keyByDataSource('CUBEJS_AWS_ATHENA_CATALOG', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Athena AWS Assume Role ARN.
    */
   athenaAwsAssumeRoleArn: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_AWS_ATHENA_ASSUME_ROLE_ARN', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_AWS_ATHENA_ASSUME_ROLE_ARN', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Athena AWS Assume Role External ID.
    */
   athenaAwsAssumeRoleExternalId: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_AWS_ATHENA_ASSUME_ROLE_EXTERNAL_ID', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_AWS_ATHENA_ASSUME_ROLE_EXTERNAL_ID', dataSource, preAggregations)).asString()
   ),
 
   /** ****************************************************************
@@ -1240,46 +1224,40 @@ const variables: Record<string, (...args: any) => any> = {
    * BigQuery project ID.
    */
   bigqueryProjectId: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_BQ_PROJECT_ID', dataSource)]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_BQ_PROJECT_ID', dataSource, preAggregations)).asString()
   ),
 
   /**
    * BigQuery Key file.
    */
   bigqueryKeyFile: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_BQ_KEY_FILE', dataSource)]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_BQ_KEY_FILE', dataSource, preAggregations)).asString()
   ),
 
   /**
    * BigQuery credentials.
    */
   bigqueryCredentials: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_BQ_CREDENTIALS', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_BQ_CREDENTIALS', dataSource, preAggregations)).asString()
   ),
 
   /**
    * BigQuery location.
    */
   bigqueryLocation: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[keyByDataSource('CUBEJS_DB_BQ_LOCATION', dataSource)]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_BQ_LOCATION', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -1287,17 +1265,14 @@ const variables: Record<string, (...args: any) => any> = {
    * @deprecated
    */
   bigqueryExportBucket: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => {
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => {
     console.warn(
       'The CUBEJS_DB_BQ_EXPORT_BUCKET is deprecated. ' +
       'Please, use the CUBEJS_DB_EXPORT_BUCKET instead.'
     );
-    return process.env[
-      keyByDataSource('CUBEJS_DB_BQ_EXPORT_BUCKET', dataSource)
-    ];
+    return get(keyByDataSource('CUBEJS_DB_BQ_EXPORT_BUCKET', dataSource, preAggregations)).asString();
   },
 
   /** ****************************************************************
@@ -1308,11 +1283,10 @@ const variables: Record<string, (...args: any) => any> = {
    * ClickHouse read only flag.
    */
   clickhouseReadOnly: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    get(keyByDataSource('CUBEJS_DB_CLICKHOUSE_READONLY', dataSource))
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_CLICKHOUSE_READONLY', dataSource, preAggregations))
       .default('false')
       .asBool()
   ),
@@ -1321,11 +1295,10 @@ const variables: Record<string, (...args: any) => any> = {
    * ClickHouse compression flag.
    */
   clickhouseCompression: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    get(keyByDataSource('CUBEJS_DB_CLICKHOUSE_COMPRESSION', dataSource))
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_CLICKHOUSE_COMPRESSION', dataSource, preAggregations))
       .default('false')
       .asBool()
   ),
@@ -1338,52 +1311,40 @@ const variables: Record<string, (...args: any) => any> = {
    * ElasticSearch API Id.
    */
   elasticApiId: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_ELASTIC_APIKEY_ID', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_ELASTIC_APIKEY_ID', dataSource, preAggregations)).asString()
   ),
 
   /**
    * ElasticSearch API Key.
    */
   elasticApiKey: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_ELASTIC_APIKEY_KEY', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_ELASTIC_APIKEY_KEY', dataSource, preAggregations)).asString()
   ),
 
   /**
    * ElasticSearch OpenDistro flag.
    */
   elasticOpenDistro: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_ELASTIC_OPENDISTRO', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_ELASTIC_OPENDISTRO', dataSource, preAggregations)).asString()
   ),
 
   /**
    * ElasticSearch query format.
    */
   elasticQueryFormat: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_ELASTIC_QUERY_FORMAT', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_ELASTIC_QUERY_FORMAT', dataSource, preAggregations)).asString()
   ),
 
   /** ****************************************************************
@@ -1394,52 +1355,40 @@ const variables: Record<string, (...args: any) => any> = {
    * Firebolt API endpoint.
    */
   fireboltApiEndpoint: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_FIREBOLT_API_ENDPOINT', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_FIREBOLT_API_ENDPOINT', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Firebolt engine name.
    */
   fireboltEngineName: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_FIREBOLT_ENGINE_NAME', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_FIREBOLT_ENGINE_NAME', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Firebolt engine endpoint.
    */
   fireboltEngineEndpoint: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_FIREBOLT_ENGINE_ENDPOINT', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_FIREBOLT_ENGINE_ENDPOINT', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Firebolt account name.
    */
   fireboltAccount: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_FIREBOLT_ACCOUNT', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_FIREBOLT_ACCOUNT', dataSource, preAggregations)).asString()
   ),
 
   /** ****************************************************************
@@ -1450,52 +1399,40 @@ const variables: Record<string, (...args: any) => any> = {
    * Hive type.
    */
   hiveType: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_HIVE_TYPE', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_HIVE_TYPE', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Hive version.
    */
   hiveVer: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_HIVE_VER', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_HIVE_VER', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Hive thrift version.
    */
   hiveThriftVer: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_HIVE_THRIFT_VER', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_HIVE_THRIFT_VER', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Hive CDH version.
    */
   hiveCdhVer: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_HIVE_CDH_VER', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_HIVE_CDH_VER', dataSource, preAggregations)).asString()
   ),
 
   /** ****************************************************************
@@ -1506,26 +1443,20 @@ const variables: Record<string, (...args: any) => any> = {
    * Aurora secret ARN.
    */
   auroraSecretArn: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DATABASE_SECRET_ARN', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DATABASE_SECRET_ARN', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Aurora cluster ARN.
    */
   auroraClusterArn: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DATABASE_CLUSTER_ARN', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DATABASE_CLUSTER_ARN', dataSource, preAggregations)).asString()
   ),
 
   /** ****************************************************************
@@ -1536,13 +1467,60 @@ const variables: Record<string, (...args: any) => any> = {
    * Redshift export bucket unload ARN.
    */
   redshiftUnloadArn: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_REDSHIFT_ARN', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_EXPORT_BUCKET_REDSHIFT_ARN', dataSource, preAggregations)).asString()
+  ),
+
+  /**
+   * Redshift AWS region for IAM authentication.
+   */
+  redshiftAwsRegion: ({
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_REDSHIFT_AWS_REGION', dataSource, preAggregations)).asString()
+  ),
+
+  /**
+   * Redshift provisioned cluster identifier for IAM authentication.
+   */
+  redshiftClusterIdentifier: ({
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_REDSHIFT_CLUSTER_IDENTIFIER', dataSource, preAggregations)).asString()
+  ),
+
+  /**
+   * Redshift Serverless workgroup name for IAM authentication.
+   */
+  redshiftWorkgroupName: ({
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_REDSHIFT_WORKGROUP_NAME', dataSource, preAggregations)).asString()
+  ),
+
+  /**
+   * Redshift IAM Assume Role ARN for cross-account access.
+   */
+  redshiftAssumeRoleArn: ({
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_REDSHIFT_ASSUME_ROLE_ARN', dataSource, preAggregations)).asString()
+  ),
+
+  /**
+   * Redshift IAM Assume Role External ID.
+   */
+  redshiftAssumeRoleExternalId: ({
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_REDSHIFT_ASSUME_ROLE_EXTERNAL_ID', dataSource, preAggregations)).asString()
   ),
 
   /** ****************************************************************
@@ -1553,13 +1531,10 @@ const variables: Record<string, (...args: any) => any> = {
    * Materialize cluster.
    */
   materializeCluster: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_MATERIALIZE_CLUSTER', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_MATERIALIZE_CLUSTER', dataSource, preAggregations)).asString()
   ),
 
   /** ****************************************************************
@@ -1570,68 +1545,50 @@ const variables: Record<string, (...args: any) => any> = {
    * Snowflake account.
    */
   snowflakeAccount: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_SNOWFLAKE_ACCOUNT', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_ACCOUNT', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Snowflake region.
    */
   snowflakeRegion: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_SNOWFLAKE_REGION', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_REGION', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Snowflake warehouse.
    */
   snowflakeWarehouse: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_SNOWFLAKE_WAREHOUSE', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_WAREHOUSE', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Snowflake role.
    */
   snowflakeRole: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_SNOWFLAKE_ROLE', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_ROLE', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Snowflake session keep alive flag.
    */
   snowflakeSessionKeepAlive: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => {
-    const val = process.env[
-      keyByDataSource(
-        'CUBEJS_DB_SNOWFLAKE_CLIENT_SESSION_KEEP_ALIVE',
-        dataSource,
-      )
-    ];
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => {
+    const val = get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_CLIENT_SESSION_KEEP_ALIVE', dataSource, preAggregations)).asString();
     if (val) {
       if (val.toLocaleLowerCase() === 'true') {
         return true;
@@ -1656,107 +1613,80 @@ const variables: Record<string, (...args: any) => any> = {
    * Snowflake authenticator.
    */
   snowflakeAuthenticator: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_SNOWFLAKE_AUTHENTICATOR', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_AUTHENTICATOR', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Snowflake OAuth token (string).
    */
   snowflakeOAuthToken: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_SNOWFLAKE_OAUTH_TOKEN', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_OAUTH_TOKEN', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Snowflake OAuth token path.
    */
   snowflakeOAuthTokenPath: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_SNOWFLAKE_OAUTH_TOKEN_PATH', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_OAUTH_TOKEN_PATH', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Snowflake host.
    */
   snowflakeHost: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_SNOWFLAKE_HOST', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_HOST', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Snowflake private key.
    */
   snowflakePrivateKey: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_SNOWFLAKE_PRIVATE_KEY', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_PRIVATE_KEY', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Snowflake private key path.
    */
   snowflakePrivateKeyPath: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_SNOWFLAKE_PRIVATE_KEY_PATH', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_PRIVATE_KEY_PATH', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Snowflake private key pass.
    */
   snowflakePrivateKeyPass: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_SNOWFLAKE_PRIVATE_KEY_PASS', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_PRIVATE_KEY_PASS', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Snowflake case sensitivity for identifiers (like database columns).
    */
   snowflakeQuotedIdentIgnoreCase: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => {
-    const val = process.env[
-      keyByDataSource(
-        'CUBEJS_DB_SNOWFLAKE_QUOTED_IDENTIFIERS_IGNORE_CASE',
-        dataSource,
-      )
-    ];
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => {
+    const val = get(keyByDataSource('CUBEJS_DB_SNOWFLAKE_QUOTED_IDENTIFIERS_IGNORE_CASE', dataSource, preAggregations)).asString();
     if (val) {
       if (val.toLocaleLowerCase() === 'true') {
         return true;
@@ -1785,16 +1715,13 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dbCatalog: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => {
+    preAggregations,
+  }: DataSourceOpts) => {
     console.warn(
       'The CUBEJS_DB_CATALOG is deprecated. ' +
       'Please, use the CUBEJS_DB_PRESTO_CATALOG instead.'
     );
-    return process.env[
-      keyByDataSource('CUBEJS_DB_CATALOG', dataSource)
-    ];
+    return get(keyByDataSource('CUBEJS_DB_CATALOG', dataSource, preAggregations)).asString();
   },
 
   /** ****************************************************************
@@ -1802,123 +1729,87 @@ const variables: Record<string, (...args: any) => any> = {
    ***************************************************************** */
 
   duckdbMotherDuckToken: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_MOTHERDUCK_TOKEN', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DUCKDB_MOTHERDUCK_TOKEN', dataSource, preAggregations)).asString()
   ),
 
   duckdbDatabasePath: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_DATABASE_PATH', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DUCKDB_DATABASE_PATH', dataSource, preAggregations)).asString()
   ),
 
   duckdbS3Region: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_S3_REGION', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DUCKDB_S3_REGION', dataSource, preAggregations)).asString()
   ),
 
   duckdbS3AccessKeyId: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_S3_ACCESS_KEY_ID', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DUCKDB_S3_ACCESS_KEY_ID', dataSource, preAggregations)).asString()
   ),
 
   duckdbS3SecretAccessKeyId: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_S3_SECRET_ACCESS_KEY', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DUCKDB_S3_SECRET_ACCESS_KEY', dataSource, preAggregations)).asString()
   ),
 
   duckdbS3Endpoint: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_S3_ENDPOINT', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DUCKDB_S3_ENDPOINT', dataSource, preAggregations)).asString()
   ),
 
   duckdbMemoryLimit: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_MEMORY_LIMIT', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DUCKDB_MEMORY_LIMIT', dataSource, preAggregations)).asString()
   ),
 
   duckdbSchema: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_SCHEMA', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DUCKDB_SCHEMA', dataSource, preAggregations)).asString()
   ),
 
   duckdbS3UseSsl: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_S3_USE_SSL', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DUCKDB_S3_USE_SSL', dataSource, preAggregations)).asString()
   ),
 
   duckdbS3UrlStyle: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_S3_URL_STYLE', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DUCKDB_S3_URL_STYLE', dataSource, preAggregations)).asString()
   ),
 
   duckdbS3SessionToken: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_S3_SESSION_TOKEN', dataSource)
-    ]
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DUCKDB_S3_SESSION_TOKEN', dataSource, preAggregations)).asString()
   ),
 
   duckdbExtensions: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => {
-    const extensions = process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_EXTENSIONS', dataSource)
-    ];
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => {
+    const extensions = get(keyByDataSource('CUBEJS_DB_DUCKDB_EXTENSIONS', dataSource, preAggregations)).asString();
     if (extensions) {
       return extensions.split(',').map(e => e.trim());
     }
@@ -1926,13 +1817,10 @@ const variables: Record<string, (...args: any) => any> = {
   },
 
   duckdbCommunityExtensions: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => {
-    const extensions = process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_COMMUNITY_EXTENSIONS', dataSource)
-    ];
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => {
+    const extensions = get(keyByDataSource('CUBEJS_DB_DUCKDB_COMMUNITY_EXTENSIONS', dataSource, preAggregations)).asString();
     if (extensions) {
       return extensions.split(',').map(e => e.trim());
     }
@@ -1940,13 +1828,10 @@ const variables: Record<string, (...args: any) => any> = {
   },
 
   duckdbS3UseCredentialChain: ({
-    dataSource
-  }: {
-    dataSource: string,
-  }) => {
-    const val = process.env[
-      keyByDataSource('CUBEJS_DB_DUCKDB_S3_USE_CREDENTIAL_CHAIN', dataSource)
-    ];
+    dataSource,
+    preAggregations,
+  }: DataSourceOpts) => {
+    const val = get(keyByDataSource('CUBEJS_DB_DUCKDB_S3_USE_CREDENTIAL_CHAIN', dataSource, preAggregations)).asString();
 
     if (val) {
       if (val.toLocaleLowerCase() === 'true') {
@@ -1977,12 +1862,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   prestoCatalog: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_PRESTO_CATALOG', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_PRESTO_CATALOG', dataSource, preAggregations)).asString()
   ),
 
   /**
@@ -1990,12 +1872,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   prestoAuthToken: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_PRESTO_AUTH_TOKEN', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_PRESTO_AUTH_TOKEN', dataSource, preAggregations)).asString()
   ),
 
   /** ***************************************************************
@@ -2007,22 +1886,17 @@ const variables: Record<string, (...args: any) => any> = {
    */
   pinotAuthToken: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_PINOT_AUTH_TOKEN', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_PINOT_AUTH_TOKEN', dataSource, preAggregations)).asString()
   ),
 
   /**
    * Pinot / Startree Null value support
    */
 
-  pinotNullHandling: ({ dataSource }: { dataSource: string }) => {
-    const val = process.env[
-      keyByDataSource('CUBEJS_DB_PINOT_NULL_HANDLING', dataSource)
-    ];
+  pinotNullHandling: ({ dataSource, preAggregations }: DataSourceOpts) => {
+    const val = get(keyByDataSource('CUBEJS_DB_PINOT_NULL_HANDLING', dataSource, preAggregations)).asString();
 
     if (val) {
       if (val.toLocaleLowerCase() === 'true') {
@@ -2053,12 +1927,9 @@ const variables: Record<string, (...args: any) => any> = {
    */
   dremioAuthToken: ({
     dataSource,
-  }: {
-    dataSource: string,
-  }) => (
-    process.env[
-      keyByDataSource('CUBEJS_DB_DREMIO_AUTH_TOKEN', dataSource)
-    ]
+    preAggregations,
+  }: DataSourceOpts) => (
+    get(keyByDataSource('CUBEJS_DB_DREMIO_AUTH_TOKEN', dataSource, preAggregations)).asString()
   ),
 
   /** ****************************************************************
@@ -2107,6 +1978,20 @@ const variables: Record<string, (...args: any) => any> = {
     .asString(),
   playgroundAuthSecret: () => get('CUBEJS_PLAYGROUND_AUTH_SECRET')
     .asString(),
+  apiSecret: () => get('CUBEJS_API_SECRET')
+    .asString(),
+  // Comma-separated rotation list. Trimmed, empties dropped, deduplicated.
+  // Takes precedence over the singular `apiSecret` when non-empty.
+  apiSecrets: (): string[] | undefined => {
+    const raw = get('CUBEJS_API_SECRETS').asString();
+    if (!raw) {
+      return undefined;
+    }
+    const unique = Array.from(
+      new Set(raw.split(',').map((s) => s.trim()).filter(Boolean))
+    );
+    return unique.length > 0 ? unique : undefined;
+  },
   agentFrameSize: () => get('CUBEJS_AGENT_FRAME_SIZE')
     .default('200')
     .asInt(),
@@ -2182,9 +2067,13 @@ const variables: Record<string, (...args: any) => any> = {
   livePreview: () => get('CUBEJS_LIVE_PREVIEW')
     .default('true')
     .asBoolStrict(),
+  cubestoreSendableParameters: () => get('CUBEJS_CUBESTORE_SENDABLE_PARAMETERS')
+    .default('true')
+    .asBoolStrict(),
   externalDefault: () => get('CUBEJS_EXTERNAL_DEFAULT')
     .default('true')
     .asBoolStrict(),
+  queueExternalId: () => get('CUBEJS_QUEUE_EXTERNAL_ID').default('false').asBool(),
   scheduledRefreshDefault: () => get(
     'CUBEJS_SCHEDULED_REFRESH_DEFAULT'
   ).default('true').asBoolStrict(),
@@ -2225,6 +2114,14 @@ const variables: Record<string, (...args: any) => any> = {
   fastReload: () => get('CUBEJS_FAST_RELOAD_ENABLED')
     .default('false')
     .asBoolStrict(),
+  accessPolicyMaskString: () => get('CUBEJS_ACCESS_POLICY_MASK_STRING')
+    .asString(),
+  accessPolicyMaskTime: () => get('CUBEJS_ACCESS_POLICY_MASK_TIME')
+    .asString(),
+  accessPolicyMaskBoolean: () => get('CUBEJS_ACCESS_POLICY_MASK_BOOLEAN')
+    .asString(),
+  accessPolicyMaskNumber: () => get('CUBEJS_ACCESS_POLICY_MASK_NUMBER')
+    .asString(),
 };
 
 type Vars = typeof variables;
