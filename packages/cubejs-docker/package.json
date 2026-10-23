@@ -39,6 +39,13 @@
     "typescript": "~5.2.2"
   },
   "resolutions": {
-    "colors": "1.4.0"
+    "colors": "1.4.0",
+    "**/node-gyp/tar": "7.5.22",
+    "**/cacache/tar": "7.5.22",
+    "**/pacote/tar": "7.5.22",
+    "**/sqlite3/tar": "7.5.22",
+    "**/get-uri/basic-ftp": "6.2.3",
+    "**/external-editor/tmp": "0.2.7",
+    "**/snowflake-sdk/toml": "5.0.1"
   }
 }

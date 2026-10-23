@@ -43,10 +43,16 @@ ENV CUBEJS_DOCKER_IMAGE_TAG=latest
 
 RUN DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
-    && apt-get install -y --no-install-recommends libssl3 python3.11 libpython3.11-dev \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends libssl3 python3.11 libpython3.11 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN yarn policies set-version v1.22.22
+
+# Stacklet: the server never runs npm (only dev mode's Playground dashboard-app
+# launcher does), and npm's bundled dependencies carry their own CVEs.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+      /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 ENV NODE_ENV=production
 ENV LANG=C.UTF-8

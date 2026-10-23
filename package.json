@@ -71,7 +71,14 @@
     "@types/node": "^20",
     "@types/ramda": "0.27.40",
     "@types/parse-path": "7.0.3",
-    "thrift": "0.20.0"
+    "thrift": "0.20.0",
+    "**/node-gyp/tar": "7.5.22",
+    "**/cacache/tar": "7.5.22",
+    "**/pacote/tar": "7.5.22",
+    "**/sqlite3/tar": "7.5.22",
+    "**/get-uri/basic-ftp": "6.2.3",
+    "**/external-editor/tmp": "0.2.7",
+    "**/snowflake-sdk/toml": "5.0.1"
   },
   "license": "MIT",
   "packageManager": "yarn@1.22.19"
