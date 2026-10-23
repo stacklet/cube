@@ -27,36 +27,32 @@ docker buildx build --platform linux/amd64 -t cubejs/cube:dev -f dev.Dockerfile 
 
 ## Stacklet builds
 
-The Stacklet fork patches certain Cube packages at the TypeScript source level.
-Because `latest.Dockerfile` installs packages from npm (not from the local
-workspace), a wrapper script is required to compile modified packages and stage
-their compiled output before `docker build` runs.
-
-**Always use the build script — never `docker build` directly:**
+The Stacklet fork patches some Cube packages at the TypeScript source level.
+`latest.Dockerfile` installs packages from npm, not from the local workspace,
+so build the image with the wrapper script rather than `docker build`:
 
 ```sh
-# From the repo root:
-./scripts/build-docker.sh cubejs/cube:v1.6.6-stacklet-$(git rev-parse --short HEAD)
+# From the repo root, after `yarn install`:
+./scripts/build-docker.sh cubejs/cube:dev
 ```
 
-The script:
-1. Runs `yarn workspace @cubejs-backend/server-core build` (and any other
-   patched packages)
-2. Copies compiled `dist/` output into `stacklet-patches/<pkg>-dist/`
-3. Runs `docker build`; the Dockerfile overlays those dist files on the
-   npm-installed versions
-4. Cleans up the staged files on exit
+The script compiles the workspace (`yarn tsc`), copies the `dist/` of each
+package in its `PATCHED_PACKAGES` list into `stacklet-patches/<pkg>-dist/`,
+and runs `docker build`. The Dockerfile overlays every `*-dist/` directory it
+finds there onto the npm-installed package. Extra arguments after the tag are
+passed to `docker build`.
 
 ### Adding a new patched package
 
-1. Make source changes and compile: `yarn workspace @cubejs-backend/<pkg> build`
-2. Add a compile + stage block to `scripts/build-docker.sh`:
-   ```bash
-   mkdir -p "$PATCHES_DIR/<pkg>-dist"
-   cp -r "$REPO_ROOT/packages/cubejs-<pkg>/dist/." "$PATCHES_DIR/<pkg>-dist/"
-   ```
-3. No Dockerfile change is needed — `latest.Dockerfile` automatically applies
-   any `*-dist/` directories it finds in `stacklet-patches/`.
+Add the package's `@cubejs-backend/` name, without the scope, to
+`PATCHED_PACKAGES` in `scripts/build-docker.sh`. No Dockerfile change is
+needed.
+
+`scripts/stacklet-overlay-guard.sh` fails on any change under `packages/` or
+`rust/` that would not reach the image. It allows Markdown, tests,
+`packages/cubejs-docker/`, and the TypeScript sources of packages in
+`PATCHED_PACKAGES`. Rust ships as prebuilt binaries, so Rust changes always
+fail.
 
 ### Verifying a patch is in the image
 

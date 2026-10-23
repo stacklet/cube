@@ -1,0 +1,372 @@
+# Build the Stacklet cubejs/cube image with scripts/build-docker.sh and publish
+# it. Registry and role come from repo Actions variables.
+#
+# Tags: v<version>-stacklet-<sha9> for pushes, and
+# v<version>-stacklet-pr<N>-<sha9> for same-repo PRs, where <version> comes
+# from packages/cubejs-docker/package.json and <sha9> is the commit built.
+#
+# Only the build job runs third-party code (yarn install, docker build), so it
+# gets no cloud credentials and no OIDC token. It hands the image to the
+# publish job as an artifact.
+name: Stacklet Image
+
+on:
+  push:
+    branches:
+      - stacklet/integration
+      - release/**
+  pull_request:
+    branches:
+      - stacklet/integration
+      - release/**
+
+permissions: {}
+
+# PR runs supersede each other. Push runs are grouped by commit alone: GitHub
+# drops a pending run whenever a newer one joins its group, so a per-branch
+# group would lose images. The same commit pushed to two branches (a release
+# branch cut from integration) queues instead of racing to the immutable tag.
+concurrency:
+  group: stacklet-image-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('push-{0}', github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  overlay-guard:
+    name: Overlay guard
+    runs-on: ubuntu-24.04
+    # Fork PRs don't run at all.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: block
+          api-key: ${{ secrets.STEP_SECURITY_API_KEY }}
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            release-assets.githubusercontent.com:443
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Check changed sources reach the image
+        run: ./scripts/stacklet-overlay-guard.sh
+
+      # The other jobs skip themselves without the role, which would leave a
+      # push to a publishing branch green with no image.
+      - name: Check publish configuration
+        if: github.event_name == 'push'
+        env:
+          PUBLISH_ROLE_ARN: ${{ vars.PUBLISH_ROLE_ARN }}
+        run: |
+          if [ -z "$PUBLISH_ROLE_ARN" ]; then
+            echo "ERROR: repo variable PUBLISH_ROLE_ARN is not set; nothing would be published"
+            exit 1
+          fi
+
+  resolve:
+    name: Resolve image
+    needs: overlay-guard
+    runs-on: ubuntu-24.04
+    if: vars.PUBLISH_ROLE_ARN != ''
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
+      tag: ${{ steps.meta.outputs.tag }}
+      image: ${{ steps.meta.outputs.image }}
+      exists: ${{ steps.exists.outputs.exists }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: block
+          api-key: ${{ secrets.STEP_SECURITY_API_KEY }}
+          allowed-endpoints: >
+            api.ecr.${{ vars.AWS_REGION }}.amazonaws.com:443
+            github.com:443
+            sts.${{ vars.AWS_REGION }}.amazonaws.com:443
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          sparse-checkout: packages/cubejs-docker/package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve image tag
+        id: meta
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: |
+          version="v$(jq -r .version packages/cubejs-docker/package.json)"
+          tag="${version}-stacklet-${PR_NUMBER:+pr${PR_NUMBER}-}${SHA:0:9}"
+          {
+            echo "sha=$SHA"
+            echo "tag=$tag"
+            echo "image=${REGISTRY}/${REPOSITORY}:${tag}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Image: ${REGISTRY}/${REPOSITORY}:${tag}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.PUBLISH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Immutable registry: an existing tag can't be re-pushed, so skip the
+      # build. Publish still checks the existing tag's manifest.
+      - name: Check whether image already exists
+        id: exists
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        # The registry is in another account than the role, so name it:
+        # without --registry-id the ECR API looks in the caller's account.
+        # Only "not found" means build; any other error fails the job.
+        run: |
+          if err="$(aws ecr describe-images \
+              --registry-id "${REGISTRY%%.*}" \
+              --repository-name "$REPOSITORY" \
+              --image-ids imageTag="$TAG" 2>&1 >/dev/null)"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Image $TAG already exists; skipping build."
+          elif [[ "$err" == *ImageNotFoundException* ]]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$err"
+            exit 1
+          fi
+
+  build:
+    name: Build
+    needs: resolve
+    runs-on: ubuntu-24.04
+    if: needs.resolve.outputs.exists == 'false'
+    permissions:
+      contents: read
+    steps:
+      # The image build reaches the npm, Docker Hub and Debian registries;
+      # the two env vars below keep yarn and the smoke test off Cypress's
+      # download servers and Cube's telemetry endpoint.
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: block
+          api-key: ${{ secrets.STEP_SECURITY_API_KEY }}
+          allowed-endpoints: >
+            api.github.com:443
+            auth.docker.io:443
+            deb.debian.org:80
+            github.com:443
+            nodejs.org:443
+            npm.duckdb.org:443
+            production.cloudfront.docker.com:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            registry.yarnpkg.com:443
+            release-assets.githubusercontent.com:443
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          # No dependency cache in a publishing workflow (cache poisoning).
+          package-manager-cache: false
+
+      - name: Install dependencies
+        env:
+          CUBESTORE_SKIP_POST_INSTALL: "true"
+          # A dev dependency's test runner; the build never uses it.
+          CYPRESS_INSTALL_BINARY: "0"
+        run: yarn install --frozen-lockfile
+
+      # Single-platform image with no attestations, so ECR stores a plain
+      # image manifest, as for the upstream mirror tags.
+      - name: Build image
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          ./scripts/build-docker.sh "$IMAGE" \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --build-arg "IMAGE_VERSION=$TAG" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=$SHA"
+
+      # /livez only checks data sources that are already connected, so it
+      # answers without a database; /readyz would need one.
+      - name: Smoke test
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+        run: |
+          docker run -d --name cube-smoke \
+            -e CUBEJS_API_SECRET=smoke-test \
+            -e CUBEJS_DB_TYPE=postgres \
+            -e CUBEJS_CACHE_AND_QUEUE_DRIVER=memory \
+            -e CUBEJS_TELEMETRY=false \
+            "$IMAGE"
+          probe="require('http').get('http://localhost:4000/livez',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+          ok=false
+          for _ in $(seq 1 60); do
+            if docker exec cube-smoke node -e "$probe" 2>/dev/null; then
+              ok=true
+              break
+            fi
+            sleep 2
+          done
+          docker logs cube-smoke 2>&1 | tail -50
+          docker rm -f cube-smoke >/dev/null
+          if [ "$ok" != true ]; then
+            echo "ERROR: /livez did not return 200 within 120s"
+            exit 1
+          fi
+          echo "Smoke test OK"
+
+      - name: Save image
+        shell: bash
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+        run: |
+          set -o pipefail
+          docker save "$IMAGE" | gzip -1 > "$RUNNER_TEMP/image.tar.gz"
+
+      - name: Upload image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stacklet-image
+          path: ${{ runner.temp }}/image.tar.gz
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  # If this job fails, use "Re-run all jobs", not "Re-run failed jobs". A
+  # failed-jobs re-run keeps build's earlier result, so it pushes again and the
+  # immutable registry rejects the tag. A full re-run finds the tag in resolve,
+  # skips build, and only checks the manifest here.
+  publish:
+    name: Publish
+    needs: [resolve, build]
+    runs-on: ubuntu-24.04
+    # Also runs when build skipped because the tag exists, to check that tag.
+    if: >-
+      !cancelled() &&
+      needs.resolve.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    permissions:
+      id-token: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: block
+          api-key: ${{ secrets.STEP_SECURITY_API_KEY }}
+          allowed-endpoints: >
+            ${{ vars.ECR_REGISTRY }}:443
+            api.ecr.${{ vars.AWS_REGION }}.amazonaws.com:443
+            sts.${{ vars.AWS_REGION }}.amazonaws.com:443
+
+      - name: Download image
+        if: needs.build.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: stacklet-image
+          path: ${{ runner.temp }}
+
+      - name: Load image
+        if: needs.build.result == 'success'
+        shell: bash
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+        run: |
+          set -o pipefail
+          gunzip -c "$RUNNER_TEMP/image.tar.gz" | docker load
+          # A tag pushed in error can't be replaced, so check before pushing.
+          # Only the containerd image store reports a descriptor; the classic
+          # store always pushes a single image manifest.
+          media_type="$(docker image inspect --format '{{if .Descriptor}}{{.Descriptor.MediaType}}{{end}}' "$IMAGE")"
+          case "$media_type" in
+            *manifest.list* | *image.index*)
+              echo "ERROR: $IMAGE is a multi-platform index ($media_type), not a single image"
+              exit 1
+              ;;
+          esac
+          echo "$IMAGE: ${media_type:-classic image store}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.PUBLISH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Push image
+        if: needs.build.result == 'success'
+        shell: bash
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
+        run: |
+          set -o pipefail
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+          docker push "$IMAGE"
+
+      - name: Check published manifest
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: |
+          media_type="$(aws ecr describe-images \
+            --registry-id "${REGISTRY%%.*}" \
+            --repository-name "$REPOSITORY" \
+            --image-ids imageTag="$TAG" \
+            --query 'imageDetails[0].imageManifestMediaType' \
+            --output text)"
+          echo "$TAG: $media_type"
+          case "$media_type" in
+            application/vnd.docker.distribution.manifest.v2+json | application/vnd.oci.image.manifest.v1+json) ;;
+            *)
+              echo "ERROR: expected a single-platform image manifest, got '$media_type'"
+              exit 1
+              ;;
+          esac
+
+      - name: Summary
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+          BUILT: ${{ needs.build.result }}
+        run: |
+          if [ "$BUILT" = success ]; then
+            echo "Published \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Image already existed, not rebuilt: \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
