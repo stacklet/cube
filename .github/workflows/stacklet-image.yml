@@ -131,15 +131,23 @@ jobs:
         id: exists
         env:
           TAG: ${{ steps.meta.outputs.tag }}
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
           REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        # The registry is in another account than the role, so name it:
+        # without --registry-id the ECR API looks in the caller's account.
+        # Only "not found" means build; any other error fails the job.
         run: |
-          if aws ecr describe-images \
+          if err="$(aws ecr describe-images \
+              --registry-id "${REGISTRY%%.*}" \
               --repository-name "$REPOSITORY" \
-              --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+              --image-ids imageTag="$TAG" 2>&1 >/dev/null)"; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Image $TAG already exists; skipping build."
-          else
+          elif [[ "$err" == *ImageNotFoundException* ]]; then
             echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$err"
+            exit 1
           fi
 
   build:
@@ -304,9 +312,11 @@ jobs:
       - name: Check published manifest
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
           REPOSITORY: ${{ vars.ECR_REPOSITORY }}
         run: |
           media_type="$(aws ecr describe-images \
+            --registry-id "${REGISTRY%%.*}" \
             --repository-name "$REPOSITORY" \
             --image-ids imageTag="$TAG" \
             --query 'imageDetails[0].imageManifestMediaType' \

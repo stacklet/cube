@@ -65,7 +65,7 @@ for path in "${changed[@]}"; do
   esac
   # Top-level test directories only: `case` globs would also match test/
   # directories nested inside shipped code.
-  if [[ "$path" =~ ^packages/[^/]+/(test|__tests__)/ ]]; then
+  if [[ "$path" =~ ^packages/[^/]+/(test|tests|__tests__)/ ]]; then
     continue
   fi
   if [[ "$path" =~ ^(packages/[^/]+)/([^/]+)/ && "${shipped[${BASH_REMATCH[1]}]:-}" = "${BASH_REMATCH[2]}" ]]; then
