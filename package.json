@@ -66,13 +66,8 @@
     "url": "https://github.com/cube-js/cube.git"
   },
   "resolutions": {
-    "es5-ext": "0.10.63",
+    "es5-ext": "0.10.53",
     "lodash": "^4.17.0",
-    "form-data": "^2.5.4",
-    "tar": "7.5.3",
-    "@octokit/endpoint": "9.0.6",
-    "browserslist": "^4.25.3",
-    "@smithy/config-resolver": "4.4.0",
     "@types/node": "^20",
     "@types/ramda": "0.27.40",
     "@types/parse-path": "7.0.3",
