@@ -1,0 +1,51 @@
+# Run the pre-commit hooks (actionlint, zizmor, shellcheck) over the
+# Stacklet-owned workflows and scripts.
+name: Stacklet Lint
+
+on:
+  push:
+    branches:
+      - stacklet/integration
+      - release/**
+  pull_request:
+    branches:
+      - stacklet/integration
+      - release/**
+
+permissions: {}
+
+concurrency:
+  group: stacklet-lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    # Fork PRs don't run at all.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          use-policy-store: true
+          api-key: ${{ secrets.STEP_SECURITY_API_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No tool cache, so a PR run can't seed tools that a later push run uses.
+      - name: Install mise
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          minimum_release_age: 7d
+          cache: false
+
+      - name: Lint
+        run: pre-commit run --all-files --show-diff-on-failure

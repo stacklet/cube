@@ -38,7 +38,9 @@ RUN yarn install --prod \
 COPY stacklet-patches/ /cube/stacklet-patches/
 RUN find /cube/stacklet-patches -maxdepth 1 -name '*-dist' -type d | while read d; do \
       pkg=$(basename "$d" -dist); \
-      cp -r "$d/." "/cube/node_modules/@cubejs-backend/$pkg/dist/"; \
+      target="/cube/node_modules/@cubejs-backend/$pkg/dist"; \
+      [ -d "$target" ] || { echo "stacklet-patches: $target not installed" >&2; exit 1; }; \
+      cp -r "$d/." "$target/" || exit 1; \
     done && rm -rf /cube/stacklet-patches
 
 FROM node:22.22.0-bookworm-slim
