@@ -1,4 +1,4 @@
-FROM node:22.22.0-bookworm-slim AS builder
+FROM node:22.23.4-bookworm-slim AS builder
 
 WORKDIR /cube
 COPY . .
@@ -6,18 +6,6 @@ COPY . .
 RUN yarn policies set-version v1.22.22
 # Yarn v1 uses aggressive timeouts with summing time spending on fs, https://github.com/yarnpkg/yarn/issues/4890
 RUN yarn config set network-timeout 120000 -g
-
-# Upgrade tar in npm's global installation to fix CVE-2026-23745
-# Download tar@7.5.3 and replace npm's bundled tar packages
-RUN npm pack tar@7.5.3 --pack-destination=/tmp && \
-    cd /tmp && tar -xzf tar-7.5.3.tgz && \
-    rm -rf /usr/local/lib/node_modules/npm/node_modules/tar && \
-    rm -rf /usr/local/lib/node_modules/npm/node_modules/node-gyp/node_modules/tar && \
-    rm -rf /usr/local/lib/node_modules/npm/node_modules/cacache/node_modules/tar && \
-    cp -r package /usr/local/lib/node_modules/npm/node_modules/tar && \
-    cp -r package /usr/local/lib/node_modules/npm/node_modules/node-gyp/node_modules/tar && \
-    cp -r package /usr/local/lib/node_modules/npm/node_modules/cacache/node_modules/tar && \
-    rm -rf /tmp/tar-7.5.3.tgz /tmp/package
 
 # Required for node-oracledb to buld on ARM64
 RUN apt-get update \
@@ -46,7 +34,7 @@ RUN find /cube/stacklet-patches -maxdepth 1 -name '*-dist' -type d | while read 
       rm -rf "$target" && cp -r "$d" "$target" || exit 1; \
     done && rm -rf /cube/stacklet-patches
 
-FROM node:22.22.0-bookworm-slim
+FROM node:22.23.4-bookworm-slim
 
 ARG IMAGE_VERSION=unknown
 
@@ -55,24 +43,20 @@ ENV CUBEJS_DOCKER_IMAGE_TAG=latest
 
 RUN DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
-    && apt-get install -y --no-install-recommends libssl3 python3.11 libpython3.11-dev \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends libssl3 python3.11 libpython3.11 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN yarn policies set-version v1.22.22
 
-# Upgrade tar in npm's global installation to fix CVE-2026-23745
-# Download tar@7.5.3 and replace npm's bundled tar packages
-RUN npm pack tar@7.5.3 --pack-destination=/tmp && \
-    cd /tmp && tar -xzf tar-7.5.3.tgz && \
-    rm -rf /usr/local/lib/node_modules/npm/node_modules/tar && \
-    rm -rf /usr/local/lib/node_modules/npm/node_modules/node-gyp/node_modules/tar && \
-    rm -rf /usr/local/lib/node_modules/npm/node_modules/cacache/node_modules/tar && \
-    cp -r package /usr/local/lib/node_modules/npm/node_modules/tar && \
-    cp -r package /usr/local/lib/node_modules/npm/node_modules/node-gyp/node_modules/tar && \
-    cp -r package /usr/local/lib/node_modules/npm/node_modules/cacache/node_modules/tar && \
-    rm -rf /tmp/tar-7.5.3.tgz /tmp/package
+# Stacklet: the server never runs npm (only dev mode's Playground dashboard-app
+# launcher does), and npm's bundled dependencies carry their own CVEs.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+      /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 ENV NODE_ENV=production
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
 WORKDIR /cube
 
