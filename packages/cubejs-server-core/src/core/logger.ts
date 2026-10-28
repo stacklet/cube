@@ -1,19 +1,9 @@
 import SqlString from 'sqlstring';
 import R from 'ramda';
 
-export type LogLevel = 'trace' | 'info' | 'warn' | 'error';
+import type { LogLevel, LoggerFn, LoggerFnParams } from '@cubejs-backend/shared';
 
-interface BaseLogMessage {
-  requestId?: string;
-  duration?: number;
-  query?: string | Record<string, any>;
-  values?: any[];
-  allSqlLines?: boolean;
-  showRestParams?: boolean;
-  error?: Error | string;
-  warning?: string;
-  [key: string]: any;
-}
+export type { LogLevel } from '@cubejs-backend/shared';
 
 type Color = '31' | '32' | '33';
 
@@ -60,17 +50,17 @@ const format = ({ requestId, duration, allSqlLines, query, values, showRestParam
   return `${prefix}${showRestParams ? `\n${restParams}` : ''}`;
 };
 
-export const devLogger = (level?: LogLevel) => (type: string, { error, warning, ...message }: BaseLogMessage): void => {
+export const devLogger = (filterByLevel: LogLevel) => (type: string, { error, warning, ...restParams }: LoggerFnParams): void => {
   const logWarning = () => console.log(
-    `${withColor(type, colors.yellow)}: ${format({ ...message, allSqlLines: true, showRestParams: true })} \n${withColor(warning || '', colors.yellow)}`
+    `${withColor(type, colors.yellow)}: ${format({ ...restParams, allSqlLines: true, showRestParams: true })} \n${withColor(warning || '', colors.yellow)}`
   );
 
   const logError = () => console.log(
-    `${withColor(type, colors.red)}: ${format({ ...message, allSqlLines: true, showRestParams: true })} \n${error}`
+    `${withColor(type, colors.red)}: ${format({ ...restParams, allSqlLines: true, showRestParams: true })} \n${error}`
   );
 
   const logDetails = (showRestParams?: boolean) => console.log(
-    `${withColor(type)}: ${format({ ...message, showRestParams })}`
+    `${withColor(type)}: ${format({ ...restParams, showRestParams })}`
   );
 
   if (error) {
@@ -79,13 +69,14 @@ export const devLogger = (level?: LogLevel) => (type: string, { error, warning, 
   }
 
   // eslint-disable-next-line default-case
-  switch ((level || 'info').toLowerCase()) {
+  switch (filterByLevel.toLowerCase()) {
     case 'trace': {
       if (!error && !warning) {
         logDetails(true);
+        break;
       }
-      break;
     }
+    // falls through, trick from 90x, levels inheritance, David Blaine: Street Magic
     case 'info': {
       if (!error && !warning && [
         'Executing SQL',
@@ -97,67 +88,106 @@ export const devLogger = (level?: LogLevel) => (type: string, { error, warning, 
         'Streaming successfully completed',
       ].includes(type)) {
         logDetails();
+        break;
       }
-      break;
     }
+    // falls through, trick from 90x, levels inheritance, David Blaine: Street Magic
     case 'warn': {
       if (!error && warning) {
         logWarning();
+        break;
       }
-      break;
     }
+    // falls through, trick from 90x, levels inheritance, David Blaine: Street Magic
     case 'error': {
       if (error) {
         logError();
+        break;
       }
-      break;
     }
   }
 };
 
-interface ProdLogParams {
-  error?: Error | string;
-  warning?: string;
-  [key: string]: any;
-}
-
-export const prodLogger = (level?: LogLevel) => (msg: string, params: ProdLogParams): void => {
+export const prodLogger = (filterByLevel: LogLevel) => (message: string, params: LoggerFnParams): void => {
   const { error, warning } = params;
 
-  const logMessage = () => console.log(JSON.stringify({ message: msg, ...params }));
+  if (!params.level) {
+    if (error) {
+      params.level = 'error';
+    } else if (warning) {
+      params.level = 'warn';
+    } else {
+      params.level = 'info';
+    }
+  }
+
+  const logMessage = () => {
+    const { level, timestamp, ...restParams } = params;
+
+    console.log(JSON.stringify({
+      timestamp,
+      level,
+      message,
+      ...restParams,
+    }));
+  };
 
   // Always emit regardless of log level — used by CloudWatch log metric filter
-  if (msg === 'Performing query completed') {
+  if (message === 'Performing query completed') {
     logMessage();
     return;
   }
 
   // eslint-disable-next-line default-case
-  switch ((level || 'warn').toLowerCase()) {
+  switch (filterByLevel.toLowerCase()) {
     case 'trace': {
       if (!error && !warning) {
         logMessage();
+        break;
       }
-      break;
     }
+    // falls through, trick from 90x, levels inheritance, David Blaine: Street Magic
     case 'info':
       if ([
         'REST API Request',
-      ].includes(msg)) {
+      ].includes(message)) {
         logMessage();
+        break;
       }
-      break;
+    // falls through, trick from 90x, levels inheritance, David Blaine: Street Magic
     case 'warn': {
       if (!error && warning) {
         logMessage();
+        break;
       }
-      break;
     }
+    // falls through, trick from 90x, levels inheritance, David Blaine: Street Magic
     case 'error': {
       if (error) {
         logMessage();
+        break;
       }
-      break;
     }
+  }
+};
+
+export const createLogger = (production: boolean, filterByLevel: LogLevel = 'info'): LoggerFn => {
+  switch (filterByLevel.toLowerCase()) {
+    case 'trace':
+    case 'info':
+    case 'warn':
+    case 'error':
+      break;
+    // not used, but let's allow
+    case 'debug':
+      break;
+    default:
+      throw new Error(`Invalid log level: ${filterByLevel}`);
+  }
+
+  if (production) {
+    return prodLogger(filterByLevel);
+  } else {
+    return devLogger(filterByLevel);
   }
 };

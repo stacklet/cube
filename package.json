@@ -28,7 +28,7 @@
   "author": "Cube Dev, Inc.",
   "dependencies": {
     "core-js": "^3.34.0",
-    "lerna": "^9.0.0"
+    "lerna": "^10.1.1"
   },
   "files": [
     "src",
@@ -48,8 +48,7 @@
     "@rollup/plugin-node-resolve": "^11.2.0",
     "@typescript-eslint/eslint-plugin": "^6.12.0",
     "@types/fs-extra": "^9.0.1",
-    "@types/jest": "^27",
-    "flush-promises": "^1.0.2",
+    "@types/jest": "^29",
     "husky": "^5.0.4",
     "is-ci": "^2.0.0",
     "less": "^3.13.1",
@@ -57,7 +56,7 @@
     "postcss": "^8.2.8",
     "prettier": "^2.0.5",
     "rimraf": "^3.0.2",
-    "rollup": "2.53.1",
+    "rollup": "2.80.0",
     "rollup-plugin-peer-deps-external": "^2.2.4",
     "rollup-plugin-tsconfig-paths": "^1.5.2",
     "typescript": "~5.2.2"
@@ -67,16 +66,19 @@
     "url": "https://github.com/cube-js/cube.git"
   },
   "resolutions": {
-    "es5-ext": "0.10.63",
+    "es5-ext": "0.10.53",
     "lodash": "^4.17.0",
-    "form-data": "^2.5.4",
-    "tar": "7.5.3",
-    "@octokit/endpoint": "9.0.6",
-    "browserslist": "^4.25.3",
-    "@smithy/config-resolver": "4.4.0",
     "@types/node": "^20",
     "@types/ramda": "0.27.40",
-    "thrift": "0.20.0"
+    "@types/parse-path": "7.0.3",
+    "thrift": "0.20.0",
+    "**/node-gyp/tar": "7.5.22",
+    "**/cacache/tar": "7.5.22",
+    "**/pacote/tar": "7.5.22",
+    "**/sqlite3/tar": "7.5.22",
+    "**/get-uri/basic-ftp": "6.2.3",
+    "**/external-editor/tmp": "0.2.7",
+    "**/snowflake-sdk/toml": "5.0.1"
   },
   "license": "MIT",
   "packageManager": "yarn@1.22.19"

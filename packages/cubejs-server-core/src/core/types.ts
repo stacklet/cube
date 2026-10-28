@@ -1,4 +1,4 @@
-import { Required, SchemaFileRepository } from '@cubejs-backend/shared';
+import { Required, SchemaFileRepository, LoggerFn, LoggerFnParams } from '@cubejs-backend/shared';
 import {
   CanSwitchSQLUserFn,
   CheckAuthFn,
@@ -87,6 +87,7 @@ export interface RequestContext {
 
 export interface DriverContext extends RequestContext {
   dataSource: string;
+  preAggregations?: boolean;
 }
 
 export interface DbTypeInternalContext {
@@ -154,6 +155,7 @@ export type ScheduledRefreshContextsFn = () => Promise<UserBackgroundContext[]>;
 // internal
 export type DriverOptions = {
   dataSource?: string,
+  preAggregations?: boolean,
   maxPoolSize?: number,
   testConnectionTimeout?: number,
 };
@@ -181,12 +183,7 @@ export type ExternalDbTypeFn = (context: RequestContext) => DatabaseType;
 export type ExternalDriverFactoryFn = (context: RequestContext) => Promise<BaseDriver> | BaseDriver;
 export type ExternalDialectFactoryFn = (context: RequestContext) => BaseQuery;
 
-export type LoggerFnParams = {
-  // It's possible to fill timestamp at the place of logging, otherwise, it will be filled in automatically
-  timestamp?: string,
-  [key: string]: any,
-};
-export type LoggerFn = (msg: string, params: LoggerFnParams) => void;
+export { LoggerFnParams, LoggerFn } from '@cubejs-backend/shared';
 
 export type BiToolSyncConfig = {
   type: string;
@@ -201,6 +198,8 @@ export interface CreateOptions {
   basePath?: string;
   devServer?: boolean;
   apiSecret?: string;
+  /** `CUBEJS_API_SECRETS`. Rotation window — see ApiGatewayOptions.apiSecrets. */
+  apiSecrets?: string[];
   logger?: LoggerFn;
   driverFactory?: DriverFactoryFn;
   dialectFactory?: DialectFactoryFn;

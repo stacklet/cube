@@ -3,6 +3,323 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.6.75](https://github.com/cube-js/cube/compare/v1.6.74...v1.6.75) (2026-10-23)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.74](https://github.com/cube-js/cube/compare/v1.6.73...v1.6.74) (2026-10-09)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.73](https://github.com/cube-js/cube/compare/v1.6.72...v1.6.73) (2026-08-26)
+
+### Bug Fixes
+
+- Validate query timezone against IANA zones ([#11575](https://github.com/cube-js/cube/issues/11575)) ([7f7a59e](https://github.com/cube-js/cube/commit/7f7a59eebd36bb28b0b5b6e8bd3954c500d5f370))
+
+## [1.6.72](https://github.com/cube-js/cube/compare/v1.6.71...v1.6.72) (2026-08-18)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.71](https://github.com/cube-js/cube/compare/v1.6.70...v1.6.71) (2026-08-17)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.70](https://github.com/cube-js/cube/compare/v1.6.69...v1.6.70) (2026-07-28)
+
+### Bug Fixes
+
+- **pinot/dremio/ksql/databriks/hive/jdbc-driver:** Сorrect SQL parameter escaping ([#11374](https://github.com/cube-js/cube/issues/11374)) ([e77c444](https://github.com/cube-js/cube/commit/e77c44471a720d31b29c7741a8a6040ec5836739))
+- **trino/prestodb-driver:** Сorrect SQL parameter escaping ([#11345](https://github.com/cube-js/cube/issues/11345)) ([20931ca](https://github.com/cube-js/cube/commit/20931cafbb115bd37dc90b94dbd171f4d15ba7ab))
+
+## [1.6.69](https://github.com/cube-js/cube/compare/v1.6.68...v1.6.69) (2026-07-10)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.68](https://github.com/cube-js/cube/compare/v1.6.67...v1.6.68) (2026-07-07)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.67](https://github.com/cube-js/cube/compare/v1.6.66...v1.6.67) (2026-07-06)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.66](https://github.com/cube-js/cube/compare/v1.6.65...v1.6.66) (2026-07-03)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.65](https://github.com/cube-js/cube/compare/v1.6.64...v1.6.65) (2026-07-01)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.64](https://github.com/cube-js/cube/compare/v1.6.63...v1.6.64) (2026-06-25)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.63](https://github.com/cube-js/cube/compare/v1.6.62...v1.6.63) (2026-06-25)
+
+### Bug Fixes
+
+- **tesseract:** Support time series queries for MySQL 8+ ([#11154](https://github.com/cube-js/cube/issues/11154)) ([da1d68d](https://github.com/cube-js/cube/commit/da1d68d616c45cf0a21d95cdf2fd376e0873794c))
+
+## [1.6.62](https://github.com/cube-js/cube/compare/v1.6.61...v1.6.62) (2026-06-23)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.61](https://github.com/cube-js/cube/compare/v1.6.60...v1.6.61) (2026-06-22)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.60](https://github.com/cube-js/cube/compare/v1.6.59...v1.6.60) (2026-06-18)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.59](https://github.com/cube-js/cube/compare/v1.6.58...v1.6.59) (2026-06-17)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.58](https://github.com/cube-js/cube/compare/v1.6.57...v1.6.58) (2026-06-17)
+
+### Features
+
+- **backend-shared:** add CUBEJS_AUTO_RUN_MODE env variable ([#11062](https://github.com/cube-js/cube/issues/11062)) ([3278e4d](https://github.com/cube-js/cube/commit/3278e4d4ba7180c28eb558b296c2603c8c948bb6))
+
+## [1.6.57](https://github.com/cube-js/cube/compare/v1.6.56...v1.6.57) (2026-06-09)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.56](https://github.com/cube-js/cube/compare/v1.6.55...v1.6.56) (2026-06-08)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.55](https://github.com/cube-js/cube/compare/v1.6.54...v1.6.55) (2026-06-05)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.54](https://github.com/cube-js/cube/compare/v1.6.53...v1.6.54) (2026-06-04)
+
+### Features
+
+- **api-gateway:** accept a list of API secrets for verification ([#10985](https://github.com/cube-js/cube/issues/10985)) ([d9a308f](https://github.com/cube-js/cube/commit/d9a308f0ef7d6cf11213bbc05858cb0cc1a55c36))
+
+## [1.6.53](https://github.com/cube-js/cube/compare/v1.6.52...v1.6.53) (2026-06-02)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.52](https://github.com/cube-js/cube/compare/v1.6.51...v1.6.52) (2026-05-29)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.51](https://github.com/cube-js/cube/compare/v1.6.50...v1.6.51) (2026-05-27)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.50](https://github.com/cube-js/cube/compare/v1.6.49...v1.6.50) (2026-05-22)
+
+### Features
+
+- Enable native orchestrator for all cases (don't allow to disable it) ([#10919](https://github.com/cube-js/cube/issues/10919)) ([9268376](https://github.com/cube-js/cube/commit/9268376f1aed7c280e15dea7d52449792270d350))
+
+## [1.6.49](https://github.com/cube-js/cube/compare/v1.6.48...v1.6.49) (2026-05-21)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.48](https://github.com/cube-js/cube/compare/v1.6.47...v1.6.48) (2026-05-19)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.47](https://github.com/cube-js/cube/compare/v1.6.46...v1.6.47) (2026-05-18)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.46](https://github.com/cube-js/cube/compare/v1.6.45...v1.6.46) (2026-05-11)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.45](https://github.com/cube-js/cube/compare/v1.6.44...v1.6.45) (2026-05-11)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.44](https://github.com/cube-js/cube/compare/v1.6.43...v1.6.44) (2026-05-06)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.43](https://github.com/cube-js/cube/compare/v1.6.42...v1.6.43) (2026-05-02)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.42](https://github.com/cube-js/cube/compare/v1.6.41...v1.6.42) (2026-05-01)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.41](https://github.com/cube-js/cube/compare/v1.6.40...v1.6.41) (2026-05-01)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.40](https://github.com/cube-js/cube/compare/v1.6.39...v1.6.40) (2026-04-30)
+
+### Performance Improvements
+
+- **cubestore-driver:** Enable sendable parameters by default ([#10763](https://github.com/cube-js/cube/issues/10763)) ([af206b4](https://github.com/cube-js/cube/commit/af206b4426e7cc6c57d7b325a6b9f0d82ac09cb3))
+- **snowflake-driver:** replace formatToTimeZone with UTC formatter (~12x) ([#10759](https://github.com/cube-js/cube/issues/10759)) ([af08537](https://github.com/cube-js/cube/commit/af08537f6f9774ed3152e9977cc97955cb60eee1))
+
+## [1.6.39](https://github.com/cube-js/cube/compare/v1.6.38...v1.6.39) (2026-04-24)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.38](https://github.com/cube-js/cube/compare/v1.6.37...v1.6.38) (2026-04-23)
+
+### Features
+
+- **cubestore:** Support passing parameters in protocol (cache/queue) ([#6225](https://github.com/cube-js/cube/issues/6225)) ([06f64cf](https://github.com/cube-js/cube/commit/06f64cf32e7d36bf6233c71e9cf8bc95d4e48aee))
+
+## [1.6.37](https://github.com/cube-js/cube/compare/v1.6.36...v1.6.37) (2026-04-20)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.36](https://github.com/cube-js/cube/compare/v1.6.35...v1.6.36) (2026-04-16)
+
+### Bug Fixes
+
+- **backend-shared:** Exclude non-credential env vars from separate pre-agg credentials trigger ([#10699](https://github.com/cube-js/cube/issues/10699)) ([2f31cf4](https://github.com/cube-js/cube/commit/2f31cf4f3359862be5029eeca04e96f5ef917c5b))
+
+## [1.6.35](https://github.com/cube-js/cube/compare/v1.6.34...v1.6.35) (2026-04-15)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.34](https://github.com/cube-js/cube/compare/v1.6.33...v1.6.34) (2026-04-14)
+
+### Features
+
+- **postgres-driver:** improve DX with connection error messages ([#10679](https://github.com/cube-js/cube/issues/10679)) ([65fb8a8](https://github.com/cube-js/cube/commit/65fb8a847ef94f20b6b24bf8aa16f943932c1bcd))
+- **query-orchestrator:** Queue - support to use external_id (under flag) ([#10538](https://github.com/cube-js/cube/issues/10538)) ([810b776](https://github.com/cube-js/cube/commit/810b77609121fbec167dd6b97be95029bffb58f7))
+- Support pre-aggregation-specific data source configuration ([#10587](https://github.com/cube-js/cube/issues/10587)) ([04eed5d](https://github.com/cube-js/cube/commit/04eed5d5ba3c1ceb8cda3c13eebf7f354eb61f48))
+
+## [1.6.33](https://github.com/cube-js/cube/compare/v1.6.32...v1.6.33) (2026-04-09)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.32](https://github.com/cube-js/cube/compare/v1.6.31...v1.6.32) (2026-04-06)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.31](https://github.com/cube-js/cube/compare/v1.6.30...v1.6.31) (2026-04-02)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.30](https://github.com/cube-js/cube/compare/v1.6.29...v1.6.30) (2026-04-01)
+
+### Features
+
+- **mssql-driver:** Support use named timezones ([#10582](https://github.com/cube-js/cube/issues/10582)) ([ee788f4](https://github.com/cube-js/cube/commit/ee788f4f843073eb26bf07e101f83084e653270f))
+
+## [1.6.29](https://github.com/cube-js/cube/compare/v1.6.28...v1.6.29) (2026-03-27)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.28](https://github.com/cube-js/cube/compare/v1.6.27...v1.6.28) (2026-03-25)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.27](https://github.com/cube-js/cube/compare/v1.6.26...v1.6.27) (2026-03-24)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.26](https://github.com/cube-js/cube/compare/v1.6.25...v1.6.26) (2026-03-23)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.25](https://github.com/cube-js/cube/compare/v1.6.24...v1.6.25) (2026-03-20)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.24](https://github.com/cube-js/cube/compare/v1.6.23...v1.6.24) (2026-03-18)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.23](https://github.com/cube-js/cube/compare/v1.6.22...v1.6.23) (2026-03-13)
+
+### Features
+
+- **cubestore-driver:** Queue - use exclusive flag with new Cube Store ([#10488](https://github.com/cube-js/cube/issues/10488)) ([c6462e4](https://github.com/cube-js/cube/commit/c6462e478bcb8a8b2caccc32787e52a8b2198852))
+- Data access policy masking ([#10463](https://github.com/cube-js/cube/issues/10463)) ([4b0d1bf](https://github.com/cube-js/cube/commit/4b0d1bfe49d8dbd72a9df03718793179e20ed167))
+
+## [1.6.22](https://github.com/cube-js/cube/compare/v1.6.21...v1.6.22) (2026-03-11)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.21](https://github.com/cube-js/cube/compare/v1.6.20...v1.6.21) (2026-03-10)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.20](https://github.com/cube-js/cube/compare/v1.6.19...v1.6.20) (2026-03-09)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.19](https://github.com/cube-js/cube/compare/v1.6.18...v1.6.19) (2026-03-03)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.18](https://github.com/cube-js/cube/compare/v1.6.17...v1.6.18) (2026-03-02)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.17](https://github.com/cube-js/cube/compare/v1.6.16...v1.6.17) (2026-02-26)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.16](https://github.com/cube-js/cube/compare/v1.6.15...v1.6.16) (2026-02-25)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.15](https://github.com/cube-js/cube/compare/v1.6.14...v1.6.15) (2026-02-23)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.14](https://github.com/cube-js/cube/compare/v1.6.13...v1.6.14) (2026-02-18)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.13](https://github.com/cube-js/cube/compare/v1.6.12...v1.6.13) (2026-02-17)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.12](https://github.com/cube-js/cube/compare/v1.6.11...v1.6.12) (2026-02-16)
+
+### Bug Fixes
+
+- **postgres-driver:** Don't expose PoolConfig as driver options ([#10393](https://github.com/cube-js/cube/issues/10393)) ([4f2e72f](https://github.com/cube-js/cube/commit/4f2e72fe17979013a50da06c8be5a69685c079ad))
+
+### Features
+
+- **postgres-driver:** Migrate to our Pool implementation ([#10389](https://github.com/cube-js/cube/issues/10389)) ([a57cabe](https://github.com/cube-js/cube/commit/a57cabed6bab72a34c738cb9b0d6e65c9a72ec60))
+- **redshift-driver:** Support IAM auth ([#10391](https://github.com/cube-js/cube/issues/10391)) ([c711ca7](https://github.com/cube-js/cube/commit/c711ca7c3b781fd975b9b9e5325865b9d27710a4))
+
+## [1.6.11](https://github.com/cube-js/cube/compare/v1.6.10...v1.6.11) (2026-02-12)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.10](https://github.com/cube-js/cube/compare/v1.6.9...v1.6.10) (2026-02-09)
+
+### Features
+
+- Unify pool to make named timeout errors ([#10375](https://github.com/cube-js/cube/issues/10375)) ([bac3cd0](https://github.com/cube-js/cube/commit/bac3cd0f2f3f572fac037686ffa16a2e687fbcdc))
+
+## [1.6.9](https://github.com/cube-js/cube/compare/v1.6.8...v1.6.9) (2026-02-06)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.8](https://github.com/cube-js/cube/compare/v1.6.7...v1.6.8) (2026-02-04)
+
+**Note:** Version bump only for package @cubejs-backend/shared
+
+## [1.6.7](https://github.com/cube-js/cube/compare/v1.6.6...v1.6.7) (2026-01-29)
+
+### Features
+
+- **server-core:** Add level field for log messages ([#10337](https://github.com/cube-js/cube/issues/10337)) ([1e7dcb6](https://github.com/cube-js/cube/commit/1e7dcb614dd6537b3bb2a1f9bd04e96c2374a673))
+- **server-core:** Exponential backoff in refresh scheduler ([#10302](https://github.com/cube-js/cube/issues/10302)) ([fe714bf](https://github.com/cube-js/cube/commit/fe714bf333dec59a3988d626fdd709062a163b4f))
+
 ## [1.6.6](https://github.com/cube-js/cube/compare/v1.6.5...v1.6.6) (2026-01-23)
 
 **Note:** Version bump only for package @cubejs-backend/shared

@@ -13,11 +13,13 @@ import {
   parseUtcIntoLocalDate,
   QueryAlias,
   CacheMode,
+  LoggerFn,
 } from '@cubejs-backend/shared';
 import {
   ResultArrayWrapper,
   ResultMultiWrapper,
   ResultWrapper,
+  rowsToColumnar,
 } from '@cubejs-backend/native';
 import type {
   Application as ExpressApplication,
@@ -55,6 +57,7 @@ import {
   SqlApiRequest,
   MetaResponseResultFn,
   RequestQuery,
+  QueryConvertRequest,
 } from './types/request';
 import {
   CheckAuthInternalOptions,
@@ -84,6 +87,7 @@ import { SubscriptionServer, WebSocketSendMessageFn } from './ws/subscription-se
 import { LocalSubscriptionStore } from './ws/local-subscription-store';
 import {
   getPivotQuery,
+  cubeSqlRequestSchema,
   getQueryGranularity,
   normalizeQuery,
   normalizeQueryCancelPreAggregations,
@@ -125,6 +129,18 @@ function systemAsyncHandler(handler: (req: Request & { context: ExtendedRequestC
   return (req: ExpressRequest, res: ExpressResponse, next: NextFunction) => {
     handler(req as any, res).catch(next);
   };
+}
+
+const DEV_TOKEN_SCOPE = 'dev-token';
+
+function hasDevTokenScope(securityContext: unknown): boolean {
+  if (typeof securityContext !== 'object' || securityContext === null) {
+    return false;
+  }
+
+  const { scope } = <Record<string, any>>securityContext;
+
+  return Array.isArray(scope) && scope.includes(DEV_TOKEN_SCOPE);
 }
 
 // Prepared CheckAuthFn, default or from config: always async
@@ -174,6 +190,8 @@ class ApiGateway {
 
   protected readonly playgroundAuthSecret?: string;
 
+  protected readonly apiSecrets?: string[];
+
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   protected readonly event: (name: string, props?: object) => void;
 
@@ -189,7 +207,7 @@ class ApiGateway {
      * It actually returns a Promise<OrchestratorApi>
      */
     protected readonly adapterApi: (ctx: RequestContext) => Promise<any>,
-    protected readonly logger: any,
+    protected readonly logger: LoggerFn,
     protected readonly options: ApiGatewayOptions,
   ) {
     this.dataSourceStorage = options.dataSourceStorage;
@@ -199,6 +217,9 @@ class ApiGateway {
     this.standalone = options.standalone;
     this.basePath = options.basePath;
     this.playgroundAuthSecret = options.playgroundAuthSecret;
+    this.apiSecrets = options.apiSecrets && options.apiSecrets.length > 0
+      ? options.apiSecrets
+      : undefined;
 
     this.queryRewrite = options.queryRewrite || (async (query) => query);
     this.subscriptionStore = options.subscriptionStore || new LocalSubscriptionStore();
@@ -289,12 +310,15 @@ class ApiGateway {
         );
 
         const compilerApi = await this.getCompilerApi(req.context);
+
+        // Cache unfiltered schema - RBAC enforcement happens at query execution time
+        // via annotation-based validation in the Rust result transform layer
         let schema = compilerApi.getGraphQLSchema();
         if (!schema) {
-          let metaConfig = await compilerApi.metaConfig(req.context, {
+          const metaConfig = await compilerApi.metaConfig(req.context, {
             requestId: req.context.requestId,
+            skipVisibilityPatch: true,
           });
-          metaConfig = this.filterVisibleItemsInMeta(req.context, metaConfig);
           schema = makeSchema(metaConfig);
           compilerApi.setGraphQLSchema(schema);
         }
@@ -302,11 +326,13 @@ class ApiGateway {
           schema,
           context: {
             req,
+            res,
             apiGateway: this
           },
           graphiql: getEnv('nodeEnv') !== 'production'
             ? { headerEditorEnabled: true }
             : false,
+          extensions: () => (res as any).extensions || {},
         })(req, res);
       })
     );
@@ -412,6 +438,22 @@ class ApiGateway {
       });
     }));
 
+    app.post(`${this.basePath}/v1/convert-query`, jsonParser, userMiddlewares, userAsyncHandler(async (req, res) => {
+      await this.convertQuery({
+        payload: req.body,
+        context: req.context,
+        res: this.resToResultFn(res)
+      });
+    }));
+
+    app.delete(`${this.basePath}/v1/running-query/:requestId`, userMiddlewares, userAsyncHandler(async (req: any, res) => {
+      await this.cancelQuery({
+        requestId: req.params.requestId,
+        context: req.context,
+        res: this.resToResultFn(res),
+      });
+    }));
+
     /** **************************************************************
      * meta scope                                                    *
      *************************************************************** */
@@ -420,15 +462,18 @@ class ApiGateway {
       `${this.basePath}/v1/meta`,
       userMiddlewares,
       userAsyncHandler(async (req, res) => {
+        const onlyViews = req.query.onlyViews === 'true';
         if ('extended' in req.query) {
           await this.metaExtended({
             context: req.context,
             res: this.resToResultFn(res),
+            onlyViews,
           });
         } else {
           await this.meta({
             context: req.context,
             res: this.resToResultFn(res),
+            onlyViews,
           });
         }
       })
@@ -448,8 +493,18 @@ class ApiGateway {
         try {
           await this.assertApiScope('data', req.context?.securityContext);
 
-          await this.sqlServer.execSql(req.body.query, res, req.context?.securityContext, req.body.cache, req.body.timezone);
+          const { error, value: body } = cubeSqlRequestSchema.validate(req.body);
+          if (error) {
+            throw new UserError(`Invalid query format: ${error.message || error.toString()}`);
+          }
+
+          await this.sqlServer.execSql(body.query, res, req.context?.securityContext, body.cache, body.timezone, body.throwContinueWait, req.context?.requestId);
         } catch (e: any) {
+          // Quickfix for https://github.com/cube-js/cube/issues/10450,
+          // Right now, it's too complicated to fix the issue correctly, because
+          // native side control stream, without understanding that it's Express.response
+          res.removeHeader('Transfer-Encoding');
+
           this.handleError({
             e,
             query: {
@@ -616,11 +671,45 @@ class ApiGateway {
       })).filter(cube => cube.config.measures?.length || cube.config.dimensions?.length || cube.config.segments?.length);
   }
 
-  public async meta({ context, res, includeCompilerId, onlyCompilerId }: {
+  /**
+   * Recursively filters a (possibly nested) view group so that only visible
+   * views are exposed. A view group is dropped (returns null) when neither it
+   * nor any of its nested groups contains a visible view, preventing leaks of
+   * restricted view names.
+   */
+  private filterVisibleViewGroup(group: any, visibleCubeNames: Set<string>): any | null {
+    const views = (group.views || []).filter((v: string) => visibleCubeNames.has(v));
+    const includes = (group.includes || [])
+      .map((include: any) => {
+        if (typeof include === 'string') {
+          return visibleCubeNames.has(include) ? include : null;
+        }
+        return this.filterVisibleViewGroup(include, visibleCubeNames);
+      })
+      .filter((include: any) => include !== null);
+
+    if (views.length === 0 && includes.length === 0) {
+      return null;
+    }
+
+    // Explicit projection (rather than spreading `group`) so internal fields
+    // added to the compiled view group in the future don't leak into the meta
+    // response by accident.
+    return {
+      name: group.name,
+      title: group.title,
+      description: group.description,
+      views,
+      includes,
+    };
+  }
+
+  public async meta({ context, res, includeCompilerId, onlyCompilerId, onlyViews }: {
     context: RequestContext,
     res: MetaResponseResultFn,
     includeCompilerId?: boolean,
-    onlyCompilerId?: boolean
+    onlyCompilerId?: boolean,
+    onlyViews?: boolean,
   }) {
     const requestStarted = new Date();
 
@@ -629,19 +718,29 @@ class ApiGateway {
       const compilerApi = await this.getCompilerApi(context);
       const metaConfig = await compilerApi.metaConfig(context, {
         requestId: context.requestId,
-        includeCompilerId: includeCompilerId || onlyCompilerId
+        includeCompilerId: includeCompilerId || onlyCompilerId,
+        includeViewGroups: true,
       });
       if (onlyCompilerId) {
-        const response: { cubes: any[], compilerId?: string } = {
+        const response: { cubes: any[], viewGroups?: any[], compilerId?: string } = {
           cubes: [],
           compilerId: metaConfig.compilerId
         };
         res(response);
         return;
       }
-      const cubesConfig = includeCompilerId ? metaConfig.cubes : metaConfig;
+      const cubesConfig = onlyViews
+        ? metaConfig.cubes.filter((c: any) => c.config?.type === 'view')
+        : metaConfig.cubes;
       const cubes = this.filterVisibleItemsInMeta(context, cubesConfig).map(cube => cube.config);
-      const response: { cubes: any[], compilerId?: string } = { cubes };
+      const visibleCubeNames = new Set(cubes.map(c => c.name));
+      const viewGroups = (metaConfig.viewGroups || [])
+        .map(group => this.filterVisibleViewGroup(group, visibleCubeNames))
+        .filter(group => group !== null);
+      const response: { cubes: any[], viewGroups?: any[], compilerId?: string } = { cubes };
+      if (viewGroups.length > 0) {
+        response.viewGroups = viewGroups;
+      }
       if (includeCompilerId) {
         response.compilerId = metaConfig.compilerId;
       }
@@ -657,7 +756,11 @@ class ApiGateway {
     }
   }
 
-  public async metaExtended({ context, res }: { context: ExtendedRequestContext, res: ResponseResultFn }) {
+  public async metaExtended({ context, res, onlyViews }: {
+    context: ExtendedRequestContext,
+    res: ResponseResultFn,
+    onlyViews?: boolean,
+  }) {
     const requestStarted = new Date();
 
     try {
@@ -668,7 +771,10 @@ class ApiGateway {
       });
       const { metaConfig, cubeDefinitions } = metaConfigExtended;
 
-      const cubes = this.filterVisibleItemsInMeta(context, metaConfig)
+      const filteredMetaConfig = onlyViews
+        ? metaConfig.filter((c: any) => c.config?.type === 'view')
+        : metaConfig;
+      const cubes = this.filterVisibleItemsInMeta(context, filteredMetaConfig)
         .map((meta) => meta.config)
         .map((cube) => ({
           ...transformCube(cube, cubeDefinitions),
@@ -897,7 +1003,7 @@ class ApiGateway {
         throw new UserError('No job description provided');
       }
 
-      const { error } = preAggsJobsRequestSchema.validate(query);
+      const { error, value } = preAggsJobsRequestSchema.validate(query);
       if (error) {
         throw new UserError(`Invalid Job query format: ${error.message || error.toString()}`);
       }
@@ -906,7 +1012,7 @@ class ApiGateway {
         case 'post':
           result = await this.preAggregationsJobsPOST(
             context,
-            <PreAggsSelector>query.selector
+            <PreAggsSelector>value.selector
           );
           if (result.length === 0) {
             throw new UserError(
@@ -1216,6 +1322,23 @@ class ApiGateway {
     }
   }
 
+  public async cancelQuery(
+    { requestId, context, res }: { requestId: string, context: RequestContext, res: ResponseResultFn }
+  ) {
+    const requestStarted = new Date();
+    try {
+      const orchestratorApi = await this.getAdapterApi(context);
+      const cancelled = await orchestratorApi.cancelQueryByRequestId(requestId);
+      await res({
+        result: cancelled
+      });
+    } catch (e: any) {
+      this.handleError({
+        e, context, res, requestStarted
+      });
+    }
+  }
+
   /**
    * Convert incoming query parameter (JSON fetched from the HTTP) to
    * an array of query type and array of normalized queries.
@@ -1265,6 +1388,10 @@ class ApiGateway {
         currentQuery = this.parseMemberExpressionsInQuery(currentQuery);
       }
 
+      if ((currentQuery as any).maskedMembers) {
+        throw new UserError('maskedMembers cannot be provided in the query');
+      }
+
       return {
         normalizedQuery: (normalizeQuery(currentQuery, persistent, cacheMode)),
         hasExpressionsInQuery
@@ -1293,6 +1420,8 @@ class ApiGateway {
             queryWithRlsFilters,
             context
           ) : queryWithRlsFilters;
+
+          rewrittenQuery.maskedMembers = queryWithRlsFilters.maskedMembers;
 
           // applyRowLevelSecurity may add new filters which may contain raw member expressions
           // if that's the case, we should run an extra pass of parsing here to make sure
@@ -1392,8 +1521,8 @@ class ApiGateway {
       });
 
       await res(queryType === QueryTypeEnum.REGULAR_QUERY ?
-        { sql: toQuery(sqlQueries[0]) } :
-        sqlQueries.map((sqlQuery) => ({ sql: toQuery(sqlQuery) })));
+        { sql: toQuery(sqlQueries[0]), dataSource: sqlQueries[0].dataSource } :
+        sqlQueries.map((sqlQuery) => ({ sql: toQuery(sqlQuery), dataSource: sqlQuery.dataSource })));
     } catch (e: any) {
       this.handleError({
         e, context, query, res, requestStarted
@@ -1588,6 +1717,35 @@ class ApiGateway {
       },
       requestId: context.requestId
     };
+  }
+
+  protected async convertQuery({ payload, context, res }: QueryConvertRequest) {
+    try {
+      await this.assertApiScope('sql', context.securityContext);
+
+      if (payload.input !== 'sql') {
+        throw new Error(`Unexpected input parameter value '${payload.input}'`);
+      }
+
+      if (payload.output !== 'rest') {
+        throw new Error(`Unexpected output parameter value '${payload.output}'`);
+      }
+
+      if (typeof payload.query !== 'string' || !payload.query.trim()) {
+        throw new Error('query parameter must be a non-empty string');
+      }
+
+      const result = await this.sqlServer.rest4sql(payload.query, context.securityContext);
+
+      await res(result);
+    } catch (e: any) {
+      this.handleError({
+        e,
+        context,
+        query: payload,
+        res,
+      });
+    }
   }
 
   protected async dryRun({ query, context, res }: QueryRequest) {
@@ -2001,11 +2159,6 @@ class ApiGateway {
       await this.assertApiScope('data', context.securityContext);
 
       query = this.parseQueryParam(request.query);
-      let resType: ResultType = ResultType.DEFAULT;
-
-      if (!Array.isArray(query) && query.responseFormat) {
-        resType = query.responseFormat;
-      }
 
       const [queryType, normalizedQueries] =
         await this.getNormalizedQueries(query, context, request.streaming, request.memberExpressions, cacheMode);
@@ -2070,7 +2223,16 @@ class ApiGateway {
 
           // TODO Can we just pass through data? Ensure hidden members can't be queried
           results = [{
-            data: response.data,
+            /**
+             * I am still working on improving cpu/memory performance of moving results from ResultWrapper
+             * into RecordBatch on a rust side. Right now, it's slower then doing transpose and JSON serialize on JS side +
+             * deserializing on Rust.
+             *
+             * Right now, it's a temporary solution, which means it will probably outlive us all.
+             *
+             * TODO(ovr): You must finish it, move to ResultWrapper after optimizing it.
+             */
+            data: rowsToColumnar(response.data),
             annotation
           }];
         }
@@ -2103,7 +2265,7 @@ class ApiGateway {
               sqlQueries[index],
               annotation,
               response,
-              resType,
+              ResultType.COLUMNAR,
             );
           })
         );
@@ -2347,7 +2509,7 @@ class ApiGateway {
   }
 
   protected createDefaultCheckAuth(options?: JWTOptions, internalOptions?: CheckAuthInternalOptions): PreparedCheckAuthFn {
-    type VerifyTokenFn = (auth: string, secret: string) => Promise<object | string> | object | string;
+    type VerifyTokenFn = (auth: string) => Promise<object | string> | object | string;
 
     const verifyToken = (auth, secret) => jwt.verify(auth, secret, {
       algorithms: <JWTAlgorithm[] | undefined>options?.algorithms,
@@ -2356,7 +2518,44 @@ class ApiGateway {
       subject: options?.subject,
     });
 
-    let checkAuthFn: VerifyTokenFn = verifyToken;
+    // `options.key` wins (used by the playground/system path), then the
+    // rotation list (`CUBEJS_API_SECRETS`), then the singular `apiSecret`.
+    let candidateSecrets: string[];
+    if (options?.key) {
+      candidateSecrets = [options.key];
+    } else if (this.apiSecrets && this.apiSecrets.length > 0) {
+      candidateSecrets = this.apiSecrets;
+    } else if (this.apiSecret) {
+      candidateSecrets = [this.apiSecret];
+    } else {
+      candidateSecrets = [];
+    }
+
+    // Default implementation: accept the token if any configured secret
+    // verifies it. Token-level failures (expiry, nbf) reproduce for every
+    // secret, so surface them immediately rather than shadowing the real
+    // cause with a later "invalid signature".
+    let checkAuthFn: VerifyTokenFn = (auth) => {
+      let lastError: any;
+
+      for (const candidate of candidateSecrets) {
+        try {
+          return verifyToken(auth, candidate);
+        } catch (e: any) {
+          lastError = e;
+          if (e?.name === 'TokenExpiredError' || e?.name === 'NotBeforeError') {
+            throw e;
+          }
+        }
+      }
+
+      if (lastError) {
+        throw lastError;
+      }
+
+      // No secret configured at all — reproduce the upstream JWT error.
+      return verifyToken(auth, undefined);
+    };
 
     if (options?.jwkUrl) {
       const jwks = createJWKsFetcher(options, {
@@ -2410,13 +2609,12 @@ class ApiGateway {
       };
     }
 
-    const secret = options?.key || this.apiSecret;
-
     return async (req, auth) => {
       if (auth) {
         try {
-          req.securityContext = await checkAuthFn(auth, secret);
-          req.signedWithPlaygroundAuthSecret = Boolean(internalOptions?.isPlaygroundCheckAuth);
+          req.securityContext = await checkAuthFn(auth);
+          req.signedWithPlaygroundAuthSecret =
+            Boolean(internalOptions?.isPlaygroundCheckAuth) && hasDevTokenScope(req.securityContext);
         } catch (e: any) {
           if (this.enforceSecurityChecks) {
             throw new CubejsHandlerError(403, 'Forbidden', 'Invalid token', e);

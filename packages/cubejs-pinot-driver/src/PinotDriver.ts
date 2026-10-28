@@ -12,6 +12,7 @@ import {
 import {
   getEnv,
   assertDataSource,
+  formatAnsi,
 } from '@cubejs-backend/shared';
 
 import type { ConnectionOptions as TLSConnectionOptions } from 'tls';
@@ -19,7 +20,6 @@ import type { ConnectionOptions as TLSConnectionOptions } from 'tls';
 import {
   map, zipObj
 } from 'ramda';
-import SqlString from 'sqlstring';
 import fetch, { Headers, Request, Response } from 'node-fetch';
 import { PinotQuery } from './PinotQuery';
 
@@ -34,6 +34,7 @@ export type PinotDriverConfiguration = {
   dataSource?: string;
   queryTimeout?: number;
   nullHandling?: boolean;
+  preAggregations?: boolean;
 };
 
 type AuthorizationHeaders = {
@@ -95,22 +96,23 @@ export class PinotDriver extends BaseDriver implements DriverInterface {
     const dataSource =
       config.dataSource ||
       assertDataSource('default');
+    const preAggregations = config.preAggregations || false;
 
     this.config = {
-      host: getEnv('dbHost', { dataSource }),
-      port: getEnv('dbPort', { dataSource }),
-      user: getEnv('dbUser', { dataSource }),
-      database: getEnv('dbName', { dataSource }),
-      basicAuth: getEnv('dbPass', { dataSource })
+      host: getEnv('dbHost', { dataSource, preAggregations }),
+      port: getEnv('dbPort', { dataSource, preAggregations }),
+      user: getEnv('dbUser', { dataSource, preAggregations }),
+      database: getEnv('dbName', { dataSource, preAggregations }),
+      basicAuth: getEnv('dbPass', { dataSource, preAggregations })
         ? {
-          user: getEnv('dbUser', { dataSource }),
-          password: getEnv('dbPass', { dataSource }),
+          user: getEnv('dbUser', { dataSource, preAggregations }),
+          password: getEnv('dbPass', { dataSource, preAggregations }),
         }
         : undefined,
-      authToken: getEnv('pinotAuthToken', { dataSource }),
-      ssl: this.getSslOptions(dataSource),
-      nullHandling: getEnv('pinotNullHandling', { dataSource }),
-      queryTimeout: getEnv('dbQueryTimeout', { dataSource }),
+      authToken: getEnv('pinotAuthToken', { dataSource, preAggregations }),
+      ssl: this.getSslOptions(dataSource, preAggregations),
+      nullHandling: getEnv('pinotNullHandling', { dataSource, preAggregations }),
+      queryTimeout: getEnv('dbQueryTimeout', { dataSource, preAggregations }),
       ...config
     };
 
@@ -118,9 +120,7 @@ export class PinotDriver extends BaseDriver implements DriverInterface {
   }
 
   public testConnection() {
-    const query = SqlString.format('select 1');
-
-    return (<Promise<any[]>> this.queryPromised(query))
+    return (<Promise<any[]>> this.queryPromised('select 1'))
       .then(response => {
         if (response.length === 0) {
           throw new Error('Unable to connect to your Pinot instance');
@@ -132,10 +132,8 @@ export class PinotDriver extends BaseDriver implements DriverInterface {
     return <Promise<any[]>> this.queryPromised(this.prepareQueryWithParams(query, values));
   }
 
-  public prepareQueryWithParams(query: string, values: unknown[]) {
-    return SqlString.format(query, (values || []).map(value => (typeof value === 'string' ? {
-      toSqlString: () => SqlString.escape(value).replace(/\\\\([_%])/g, '\\$1'),
-    } : value)));
+  protected prepareQueryWithParams(query: string, values: unknown[]) {
+    return formatAnsi(query, values || []);
   }
 
   public authorizationHeaders(): AuthorizationHeaders | {} {

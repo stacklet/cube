@@ -99,6 +99,7 @@ describe('SQL Generation', () => {
           '      card_tbl AS "cards"  GROUP BY 1 ORDER BY 2 DESC';
       expect(queryAndParams[0]).toEqual(expected);
     });
+
     it('Simple query - time dimension', async () => {
       await compilers.compiler.compile();
 
@@ -126,6 +127,66 @@ describe('SQL Generation', () => {
       expect(queryAndParams[0]).toContain('GROUP BY 1, 2');
       expect(queryAndParams[0]).toContain('ORDER BY 2');
     });
+
+    const buildTimezoneQuery = (timezone: string) => new PostgresQuery(compilers, {
+      measures: ['cards.count'],
+      timeDimensions: [
+        {
+          dimension: 'cards.createdAt',
+          granularity: 'day',
+          dateRange: ['2021-01-01', '2021-01-02']
+        }
+      ],
+      timezone,
+      filters: [],
+    });
+
+    it.each([
+      'Not/AZone',
+      '+05:00',
+      '+05',
+      '05',
+      'foo/bar',
+    ])('rejects invalid timezone %j', async (timezone) => {
+      await compilers.compiler.compile();
+      expect(() => buildTimezoneQuery(timezone)).toThrow(UserError);
+    });
+
+    it.each([
+      'America/New_York',
+      'america/new_york',
+      'AMERICA/NEW_YORK',
+      'utc',
+      'uTc',
+    ])('accepts valid timezone regardless of case: %s', async (timezone) => {
+      await compilers.compiler.compile();
+      expect(() => buildTimezoneQuery(timezone)).not.toThrow();
+    });
+
+    it('renders a canonical timezone into SQL', async () => {
+      await compilers.compiler.compile();
+      const [sql] = buildTimezoneQuery('America/New_York').buildSqlAndParams();
+      expect(sql).toContain("AT TIME ZONE 'America/New_York'");
+    });
+
+    // Counterpart: query_tools.rs `format!("Incorrect timezone {}", timezone)`.
+    it('reports the invalid zone with the same message as the native planner', async () => {
+      await compilers.compiler.compile();
+      expect(() => buildTimezoneQuery('Not/AZone')).toThrow('Incorrect timezone Not/AZone');
+    });
+
+    // The native planner parses the zone case-sensitively, so the name reaching the
+    // dialects has to be the canonical one whichever planner runs.
+    it.each([
+      ['utc', 'UTC'],
+      ['america/new_york', 'America/New_York'],
+    ])('canonicalizes timezone %j to %j', async (timezone, expected) => {
+      await compilers.compiler.compile();
+      const query = buildTimezoneQuery(timezone);
+      expect(query.timezone).toBe(expected);
+      expect(query.buildSqlAndParams()[0]).toContain(`AT TIME ZONE '${expected}'`);
+    });
+
     it('Simple query - complex measure', async () => {
       await compilers.compiler.compile();
 
@@ -143,6 +204,7 @@ describe('SQL Generation', () => {
           '      card_tbl AS "cards" ';
       expect(queryAndParams[0]).toEqual(expected);
     });
+
     it('Simple query - complex dimension', async () => {
       await compilers.compiler.compile();
 
@@ -163,6 +225,7 @@ describe('SQL Generation', () => {
           '      card_tbl AS "cards"  GROUP BY 1 ORDER BY 2 DESC';
       expect(queryAndParams[0]).toEqual(expected);
     });
+
     it('Simple query - CUBE dimension', async () => {
       await compilers.compiler.compile();
 
@@ -183,6 +246,7 @@ describe('SQL Generation', () => {
           '      card_tbl AS "cards"  GROUP BY 1 ORDER BY 2 DESC';
       expect(queryAndParams[0]).toEqual(expected);
     });
+
     it('Simple query - CUBE id', async () => {
       await compilers.compiler.compile();
 
@@ -203,6 +267,7 @@ describe('SQL Generation', () => {
           '      card_tbl AS "cards"  GROUP BY 1 ORDER BY 2 DESC';
       expect(queryAndParams[0]).toEqual(expected);
     });
+
     it('Simple query - simple filter', async () => {
       await compilers.compiler.compile();
 
@@ -246,6 +311,7 @@ describe('SQL Generation', () => {
       const expectedParams = ['type_value', 'not_type_value', 'type_value'];
       expect(queryAndParams[1]).toEqual(expectedParams);
     });
+
     it('Simple query - null and many equals filter', async () => {
       await compilers.compiler.compile();
 
@@ -880,9 +946,9 @@ describe('SQL Generation', () => {
           if (q.measures[0].includes('count')) {
             expect(queryString.includes('INTERVAL \'6 months\'')).toBeTruthy();
           } else if (q.measures[0].includes('rollingCountByTrailing2Day')) {
-            expect(queryString.includes('- interval \'2 day\'')).toBeTruthy();
+            expect(queryString.includes('- interval \'2 days\'')).toBeTruthy();
           } else if (q.measures[0].includes('rollingCountByLeading2Day')) {
-            expect(queryString.includes('+ interval \'3 day\'')).toBeTruthy();
+            expect(queryString.includes('+ interval \'3 days\'')).toBeTruthy();
           }
         });
       });
@@ -1104,6 +1170,20 @@ describe('SQL Generation', () => {
       expect(timeDimension.formatToDate('2021-01-01T23:59:59.999999')).toEqual(
         '2021-01-01T23:59:59.999999'
       );
+    });
+
+    it('CORE-541: measure filter casts bound param - bigquery tesseract planner', async () => {
+      await compilers.compiler.compile();
+
+      const query = new BigqueryQuery(compilers, {
+        measures: ['cards.count'],
+        filters: [
+          { member: 'cards.count', operator: 'gt', values: ['10'] }
+        ],
+        useNativeSqlPlanner: true,
+      });
+      const [sql] = query.buildSqlAndParams();
+      expect(sql).toContain('CAST(? AS FLOAT64)');
     });
 
     it('Test time series with different granularity - postgres', async () => {
@@ -2682,5 +2762,376 @@ describe('Class unit tests', () => {
     const sql = query.buildSqlAndParams();
     const re = new RegExp('(b__aid).*(b__bval_sum).*(b__count).*');
     expect(re.test(sql[0])).toBeTruthy();
+  });
+
+  describe('SECURITY_CONTEXT unsafeValue with nested properties', () => {
+    // language=JavaScript
+    const securityContextCompilers = prepareJsCompiler(`
+      cube(\`orders\`, {
+        sql: \`SELECT * FROM \${SECURITY_CONTEXT.cubeCloud.groups.unsafeValue() === 'admin' ? 'admin_orders' : 'public_orders'}\`,
+
+        measures: {
+          count: {
+            type: 'count',
+          },
+        },
+
+        dimensions: {
+          id: {
+            sql: 'id',
+            type: 'number',
+            primaryKey: true,
+          },
+        },
+      });
+    `);
+
+    it('should resolve nested unsafeValue to leaf value, not parent object', async () => {
+      await securityContextCompilers.compiler.compile();
+
+      const query = new PostgresQuery(securityContextCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: { groups: 'admin' } }
+        }
+      });
+      const [sql] = query.buildSqlAndParams();
+      expect(sql).toContain('admin_orders');
+      expect(sql).not.toContain('public_orders');
+    });
+
+    it('should resolve nested unsafeValue to non-matching leaf value', async () => {
+      await securityContextCompilers.compiler.compile();
+
+      const query = new PostgresQuery(securityContextCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: { groups: 'viewer' } }
+        }
+      });
+      const [sql] = query.buildSqlAndParams();
+      expect(sql).toContain('public_orders');
+      expect(sql).not.toContain('admin_orders');
+    });
+  });
+
+  describe('SECURITY_CONTEXT nested array filter with IN clause', () => {
+    // language=JavaScript
+    const securityContextArrayCompilers = prepareJsCompiler(`
+      cube(\`orders\`, {
+        sql: \`
+          SELECT * FROM orders
+          WHERE \${SECURITY_CONTEXT.cubeCloud.groups.filter(groups => \`source IN (\${groups.join(',')})\`)}
+        \`,
+
+        measures: {
+          count: {
+            type: 'count',
+          },
+        },
+
+        dimensions: {
+          id: {
+            sql: 'id',
+            type: 'number',
+            primaryKey: true,
+          },
+        },
+      });
+    `);
+
+    it('should generate IN clause with params for nested array filter', async () => {
+      await securityContextArrayCompilers.compiler.compile();
+
+      const query = new PostgresQuery(securityContextArrayCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: { groups: ['admin', 'operator'] } }
+        }
+      });
+      const [sql, params] = query.buildSqlAndParams();
+      expect(sql).toContain('source IN (');
+      expect(sql).not.toContain('= ');
+      expect(params).toContain('admin');
+      expect(params).toContain('operator');
+    });
+
+    it('should generate 1=1 when nested array filter value is missing', async () => {
+      await securityContextArrayCompilers.compiler.compile();
+
+      const query = new PostgresQuery(securityContextArrayCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: {} }
+        }
+      });
+      const [sql] = query.buildSqlAndParams();
+      expect(sql).toContain('1 = 1');
+    });
+  });
+
+  describe('SECURITY_CONTEXT toString renders as param in interpolation', () => {
+    // language=JavaScript
+    const securityContextToStringCompilers = prepareJsCompiler(`
+      cube(\`orders\`, {
+        sql: \`SELECT * FROM orders WHERE tenant_id = \${SECURITY_CONTEXT.cubeCloud.tenantId}\`,
+
+        measures: {
+          count: {
+            type: 'count',
+          },
+        },
+
+        dimensions: {
+          id: {
+            sql: 'id',
+            type: 'number',
+            primaryKey: true,
+          },
+        },
+      });
+    `);
+
+    it('should render nested primitive as param placeholder in SQL', async () => {
+      await securityContextToStringCompilers.compiler.compile();
+
+      const query = new PostgresQuery(securityContextToStringCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: { tenantId: 'tenant_123' } }
+        }
+      });
+      const [sql, params] = query.buildSqlAndParams();
+      expect(sql).toMatch(/tenant_id = \$\d+/);
+      expect(params).toContain('tenant_123');
+    });
+  });
+
+  describe('SECURITY_CONTEXT with Tesseract (native SQL planner)', () => {
+    // language=JavaScript
+    const unsafeValueCompilers = prepareJsCompiler(`
+      cube(\`orders\`, {
+        sql: \`SELECT * FROM \${SECURITY_CONTEXT.cubeCloud.groups.unsafeValue() === 'admin' ? 'admin_orders' : 'public_orders'}\`,
+
+        measures: {
+          count: {
+            type: 'count',
+          },
+        },
+
+        dimensions: {
+          id: {
+            sql: 'id',
+            type: 'number',
+            primaryKey: true,
+          },
+        },
+      });
+    `);
+
+    it('tesseract: unsafeValue resolves nested leaf value', async () => {
+      await unsafeValueCompilers.compiler.compile();
+
+      const query = new PostgresQuery(unsafeValueCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: { groups: 'admin' } }
+        },
+        useNativeSqlPlanner: true,
+      });
+      const [sql] = query.buildSqlAndParams();
+      expect(sql).toContain('admin_orders');
+      expect(sql).not.toContain('public_orders');
+    });
+
+    it('tesseract: unsafeValue resolves non-matching leaf value', async () => {
+      await unsafeValueCompilers.compiler.compile();
+
+      const query = new PostgresQuery(unsafeValueCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: { groups: 'viewer' } }
+        },
+        useNativeSqlPlanner: true,
+      });
+      const [sql] = query.buildSqlAndParams();
+      expect(sql).toContain('public_orders');
+      expect(sql).not.toContain('admin_orders');
+    });
+
+    // language=JavaScript
+    const arrayFilterCompilers = prepareJsCompiler(`
+      cube(\`orders\`, {
+        sql: \`
+          SELECT * FROM orders
+          WHERE \${SECURITY_CONTEXT.cubeCloud.groups.filter(groups => \`source IN (\${groups.join(',')})\`)}
+        \`,
+
+        measures: {
+          count: {
+            type: 'count',
+          },
+        },
+
+        dimensions: {
+          id: {
+            sql: 'id',
+            type: 'number',
+            primaryKey: true,
+          },
+        },
+      });
+    `);
+
+    it('tesseract: array filter generates IN clause with params', async () => {
+      await arrayFilterCompilers.compiler.compile();
+
+      const query = new PostgresQuery(arrayFilterCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: { groups: ['admin', 'operator'] } }
+        },
+        useNativeSqlPlanner: true,
+      });
+      const [sql, params] = query.buildSqlAndParams();
+      expect(sql).toContain('source IN (');
+      expect(params).toContain('admin');
+      expect(params).toContain('operator');
+    });
+
+    it('tesseract: missing array filter value generates 1=1', async () => {
+      await arrayFilterCompilers.compiler.compile();
+
+      const query = new PostgresQuery(arrayFilterCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: {} }
+        },
+        useNativeSqlPlanner: true,
+      });
+      const [sql] = query.buildSqlAndParams();
+      expect(sql).toContain('1 = 1');
+    });
+
+    // language=JavaScript
+    const toStringCompilers = prepareJsCompiler(`
+      cube(\`orders\`, {
+        sql: \`SELECT * FROM orders WHERE tenant_id = \${SECURITY_CONTEXT.cubeCloud.tenantId}\`,
+
+        measures: {
+          count: {
+            type: 'count',
+          },
+        },
+
+        dimensions: {
+          id: {
+            sql: 'id',
+            type: 'number',
+            primaryKey: true,
+          },
+        },
+      });
+    `);
+
+    it('tesseract: toString renders param placeholder in SQL', async () => {
+      await toStringCompilers.compiler.compile();
+
+      const query = new PostgresQuery(toStringCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: { tenantId: 'tenant_123' } }
+        },
+        useNativeSqlPlanner: true,
+      });
+      const [sql, params] = query.buildSqlAndParams();
+      expect(sql).toMatch(/tenant_id = \$\d+/);
+      expect(params).toContain('tenant_123');
+    });
+
+    // language=JavaScript
+    const filterStringColumnCompilers = prepareJsCompiler(`
+      cube(\`orders\`, {
+        sql: \`SELECT * FROM orders WHERE \${SECURITY_CONTEXT.cubeCloud.tenantId.filter('tenant_id')}\`,
+
+        measures: {
+          count: {
+            type: 'count',
+          },
+        },
+
+        dimensions: {
+          id: {
+            sql: 'id',
+            type: 'number',
+            primaryKey: true,
+          },
+        },
+      });
+    `);
+
+    it('tesseract: filter with string column and scalar value generates equality', async () => {
+      await filterStringColumnCompilers.compiler.compile();
+
+      const query = new PostgresQuery(filterStringColumnCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: { tenantId: 'abc' } }
+        },
+        useNativeSqlPlanner: true,
+      });
+      const [sql, params] = query.buildSqlAndParams();
+      expect(sql).toMatch(/tenant_id = \$\d+/);
+      expect(params).toContain('abc');
+    });
+
+    // language=JavaScript
+    const filterStringColumnArrayCompilers = prepareJsCompiler(`
+      cube(\`orders\`, {
+        sql: \`SELECT * FROM orders WHERE \${SECURITY_CONTEXT.cubeCloud.groups.filter('source')}\`,
+
+        measures: {
+          count: {
+            type: 'count',
+          },
+        },
+
+        dimensions: {
+          id: {
+            sql: 'id',
+            type: 'number',
+            primaryKey: true,
+          },
+        },
+      });
+    `);
+
+    it('tesseract: filter with string column and array value generates IN clause', async () => {
+      await filterStringColumnArrayCompilers.compiler.compile();
+
+      const query = new PostgresQuery(filterStringColumnArrayCompilers, {
+        measures: ['orders.count'],
+        timeDimensions: [],
+        contextSymbols: {
+          securityContext: { cubeCloud: { groups: ['admin', 'operator'] } }
+        },
+        useNativeSqlPlanner: true,
+      });
+      const [sql, params] = query.buildSqlAndParams();
+      expect(sql).toContain('source IN (');
+      expect(params).toContain('admin');
+      expect(params).toContain('operator');
+    });
   });
 });
