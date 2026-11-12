@@ -3,6 +3,21 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.6.77](https://github.com/cube-js/cube/compare/v1.6.76...v1.6.77) (2026-11-06)
+
+### Bug Fixes
+
+- **api-gateway:** Guard member-expression SQL eval against JS injection ([#12207](https://github.com/cube-js/cube/issues/12207)) ([d24d1d6](https://github.com/cube-js/cube/commit/d24d1d69e774edbbe6422644ce2e1d1a6a1e7a5a))
+- **api-gateway:** Stricter validation for member expressions ([#12626](https://github.com/cube-js/cube/issues/12626)) ([da11552](https://github.com/cube-js/cube/commit/da115527205e25a70db958b8314ca3342906f83f))
+- Escape quote characters in SQL identifiers ([#12622](https://github.com/cube-js/cube/issues/12622)) ([8c76d4c](https://github.com/cube-js/cube/commit/8c76d4cce05ac536d4065258e17e4fc082770797))
+
+## [1.6.76](https://github.com/cube-js/cube/compare/v1.6.75...v1.6.76) (2026-10-30)
+
+### Bug Fixes
+
+- **backend-native:** Bump neon to 1.1.2 to stop leaking N-API async work, thanks [@cavi21](https://github.com/cavi21) (backport [#12461](https://github.com/cube-js/cube/issues/12461) to v1.6) ([c8dbc6d](https://github.com/cube-js/cube/commit/c8dbc6d7ff4ef6c0c4c2a785f700d1a21fc50543)), closes [neon-bindings/neon#1145](https://github.com/neon-bindings/neon/issues/1145) [#12170](https://github.com/cube-js/cube/issues/12170)
+- Update tzdb to 2026e for the Canadian DST changes (backport [#12466](https://github.com/cube-js/cube/issues/12466) to v1.6) ([#12471](https://github.com/cube-js/cube/issues/12471)) ([26b4813](https://github.com/cube-js/cube/commit/26b4813fa89bae3ea7e9a9952b6364f3229f1634)), closes [#12431](https://github.com/cube-js/cube/issues/12431)
+
 ## [1.6.75](https://github.com/cube-js/cube/compare/v1.6.74...v1.6.75) (2026-10-23)
 
 ### Features
