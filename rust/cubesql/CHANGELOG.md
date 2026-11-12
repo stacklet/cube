@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.6.77](https://github.com/cube-js/cube/compare/v1.6.76...v1.6.77) (2026-11-06)
+
+### Bug Fixes
+
+- Escape quote characters in SQL identifiers ([#12622](https://github.com/cube-js/cube/issues/12622)) ([8c76d4c](https://github.com/cube-js/cube/commit/8c76d4cce05ac536d4065258e17e4fc082770797))
+
+## [1.6.76](https://github.com/cube-js/cube/compare/v1.6.75...v1.6.76) (2026-10-30)
+
+### Bug Fixes
+
+- Update tzdb to 2026e for the Canadian DST changes (backport [#12466](https://github.com/cube-js/cube/issues/12466) to v1.6) ([#12471](https://github.com/cube-js/cube/issues/12471)) ([26b4813](https://github.com/cube-js/cube/commit/26b4813fa89bae3ea7e9a9952b6364f3229f1634)), closes [#12431](https://github.com/cube-js/cube/issues/12431)
+
 ## [1.6.75](https://github.com/cube-js/cube/compare/v1.6.74...v1.6.75) (2026-10-23)
 
 **Note:** Version bump only for package @cubejs-backend/cubesql
