@@ -130,7 +130,15 @@ export class CompilerApi {
 
   protected compiledScriptCacheInterval?: NodeJS.Timeout;
 
-  protected graphqlSchema?: GraphQLSchema;
+  /**
+   * Keyed by the compiler id `metaConfig` returns, which mixes in the caller's visibility mask:
+   * one schema per model version and set of members the access policies leave visible.
+   */
+  protected graphqlSchemas: LRUCache<string, GraphQLSchema> = new LRUCache({
+    max: 64,
+    ttl: 1000 * 60 * 5,
+    updateAgeOnGet: true,
+  });
 
   protected compilers?: Promise<Compiler>;
 
@@ -198,15 +206,15 @@ export class CompilerApi {
     // using safeguard for potential dangling references.
     this.compilers = disposedProxy('compilers', 'disposed CompilerApi instance');
     this.queryFactory = disposedProxy('queryFactory', 'disposed CompilerApi instance');
-    this.graphqlSchema = undefined;
+    this.graphqlSchemas.clear();
   }
 
-  public setGraphQLSchema(schema: GraphQLSchema): void {
-    this.graphqlSchema = schema;
+  public setGraphQLSchema(compilerId: string, schema: GraphQLSchema): void {
+    this.graphqlSchemas.set(compilerId, schema);
   }
 
-  public getGraphQLSchema(): GraphQLSchema {
-    return this.graphqlSchema;
+  public getGraphQLSchema(compilerId: string): GraphQLSchema | undefined {
+    return this.graphqlSchemas.get(compilerId);
   }
 
   public createNativeInstance(): NativeInstance {
@@ -803,11 +811,28 @@ export class CompilerApi {
     // also lets a conditionally-masked aggregate measure render its real value
     // (instead of being fully masked) when the query is already scoped to the
     // filter's rows.
-    for (const member of Array.from(maskedMembersSet)) {
-      const maskFilter = memberMaskFiltersMap[member];
-      if (maskFilter && this.queryFiltersImplyFilter(query.filters || [], maskFilter)) {
-        maskedMembersSet.delete(member);
-        delete memberMaskFiltersMap[member];
+    // Query filters prove nothing about rows read outside them: time shifts move them,
+    // and any exclude / keepOnly directive drops them — whatever it lists, since filters
+    // on members that only reference a listed member are dropped too.
+    const readsRowsOutsideFilters = sql.memberNames.some((member) => {
+      if (cubeEvaluator.isMeasure(member)) {
+        const measure = cubeEvaluator.measureByPath(member);
+        return !!measure.timeShift?.length || !!measure.filter?.exclude || !!measure.filter?.keepOnly;
+      }
+      if (cubeEvaluator.isDimension(member)) {
+        const dimension = cubeEvaluator.dimensionByPath(member);
+        return !!dimension.filter?.exclude || !!dimension.filter?.keepOnly;
+      }
+      return false;
+    });
+
+    if (!readsRowsOutsideFilters) {
+      for (const member of Array.from(maskedMembersSet)) {
+        const maskFilter = memberMaskFiltersMap[member];
+        if (maskFilter && this.queryFiltersImplyFilter(query.filters || [], maskFilter)) {
+          maskedMembersSet.delete(member);
+          delete memberMaskFiltersMap[member];
+        }
       }
     }
 
@@ -849,6 +874,18 @@ export class CompilerApi {
   }
 
   /**
+   * Filter values as strings, or null when they can't be compared by their text:
+   * `null` renders as IS NULL while the string 'null' is an ordinary value, so
+   * stringifying both would make two different conditions look identical.
+   */
+  protected comparableFilterValues(leaf: any): string[] | null {
+    const values = leaf.values ?? [];
+    const isScalar = (value: unknown) => typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+
+    return Array.isArray(values) && values.every(isScalar) ? values.map(String) : null;
+  }
+
+  /**
    * Returns true when a query leaf condition is at least as restrictive as a
    * target leaf condition on the same member (i.e. the rows allowed by the query
    * condition are guaranteed to be a subset of the rows allowed by the target).
@@ -856,28 +893,32 @@ export class CompilerApi {
    * false so masking is preserved.
    */
   protected leafFilterImplies(queryLeaf: any, targetLeaf: any): boolean {
-    if (this.filterMemberName(queryLeaf) !== this.filterMemberName(targetLeaf)) {
+    const member = this.filterMemberName(queryLeaf);
+    if (!member || member !== this.filterMemberName(targetLeaf)) {
       return false;
     }
     const qOp = queryLeaf.operator;
     const tOp = targetLeaf.operator;
-    const qVals = (queryLeaf.values || []).map((v: any) => String(v));
-    const tVals = (targetLeaf.values || []).map((v: any) => String(v));
+    const qVals = this.comparableFilterValues(queryLeaf);
+    const tVals = this.comparableFilterValues(targetLeaf);
+    if (!qVals || !tVals) {
+      return false;
+    }
 
-    // Identical condition.
-    if (
-      qOp === tOp &&
-      qVals.length === tVals.length &&
-      qVals.every((v: string) => tVals.includes(v)) &&
-      tVals.every((v: string) => qVals.includes(v))
-    ) {
+    // Identical condition. Only equals/notEquals treat values as a set; for range
+    // operators such as inDateRange/notInDateRange each position is a distinct
+    // bound, so reversed endpoints describe different rows.
+    const sameValues = qOp === 'equals' || qOp === 'notEquals'
+      ? qVals.every(v => tVals.includes(v)) && tVals.every(v => qVals.includes(v))
+      : qVals.every((v, i) => v === tVals[i]);
+    if (qOp === tOp && qVals.length === tVals.length && sameValues) {
       return true;
     }
 
     // equals/in: the query value set must be a subset of the target value set
     // (querying fewer values is more restrictive).
     if (qOp === 'equals' && tOp === 'equals') {
-      return qVals.length > 0 && qVals.every((v: string) => tVals.includes(v));
+      return qVals.length > 0 && qVals.every(v => tVals.includes(v));
     }
 
     // Numeric range bounds in the same direction.
@@ -912,7 +953,9 @@ export class CompilerApi {
       return false;
     }
     if (condition.and) {
-      return condition.and.every((c: any) => this.filterConditionImplied(guaranteedLeaves, c));
+      // An empty group proves nothing; `every` on it would unmask unconditionally.
+      return condition.and.length > 0 &&
+        condition.and.every((c: any) => this.filterConditionImplied(guaranteedLeaves, c));
     }
     if (condition.or) {
       return condition.or.some((c: any) => this.filterConditionImplied(guaranteedLeaves, c));

@@ -276,32 +276,6 @@ class ApiGateway {
      * graphql scope                                                 *
      *************************************************************** */
 
-    app.post(`${this.basePath}/v1/graphql-to-json`, userMiddlewares, async (req: any, res) => {
-      const { query, variables } = req.body;
-      const compilerApi = await this.getCompilerApi(req.context);
-
-      const metaConfig = await compilerApi.metaConfig(req.context, {
-        requestId: req.context.requestId,
-      });
-
-      let schema = compilerApi.getGraphQLSchema();
-      if (!schema) {
-        schema = makeSchema(metaConfig);
-        compilerApi.setGraphQLSchema(schema);
-      }
-
-      try {
-        const jsonQuery = getJsonQueryFromGraphQLQuery(query, metaConfig, variables);
-        res.json({ jsonQuery });
-      } catch (e: any) {
-        const stack = getEnv('devMode') ? e.stack : undefined;
-        this.logger('GraphQL to JSON error', {
-          error: (stack || e).toString(),
-        });
-        res.json({ jsonQuery: null });
-      }
-    });
-
     app.use(
       `${this.basePath}/graphql`,
       userMiddlewares,
@@ -313,16 +287,17 @@ class ApiGateway {
 
         const compilerApi = await this.getCompilerApi(req.context);
 
-        // Cache unfiltered schema - RBAC enforcement happens at query execution time
-        // via annotation-based validation in the Rust result transform layer
-        let schema = compilerApi.getGraphQLSchema();
+        // Built from the caller's visibility-patched meta so introspection doesn't list members
+        // their access policies hide. The compiler id carries the visibility mask, so callers
+        // with the same visible members share a schema.
+        const { cubes, compilerId } = await compilerApi.metaConfig(req.context, {
+          requestId: req.context.requestId,
+          includeCompilerId: true,
+        });
+        let schema = compilerApi.getGraphQLSchema(compilerId);
         if (!schema) {
-          const metaConfig = await compilerApi.metaConfig(req.context, {
-            requestId: req.context.requestId,
-            skipVisibilityPatch: true,
-          });
-          schema = makeSchema(metaConfig);
-          compilerApi.setGraphQLSchema(schema);
+          schema = makeSchema(cubes);
+          compilerApi.setGraphQLSchema(compilerId, schema);
         }
         return graphqlHTTP({
           schema,
@@ -480,6 +455,33 @@ class ApiGateway {
         }
       })
     );
+
+    // Named for GraphQL but guarded by `meta`: it only reads the data model
+    // metadata to translate a query string, and executes nothing.
+    app.post(`${this.basePath}/v1/graphql-to-json`, jsonParser, userMiddlewares, userAsyncHandler(async (req: any, res) => {
+      await this.assertApiScope(
+        'meta',
+        req?.context?.securityContext
+      );
+
+      const { query, variables } = req.body;
+      const compilerApi = await this.getCompilerApi(req.context);
+
+      const metaConfig = await compilerApi.metaConfig(req.context, {
+        requestId: req.context.requestId,
+      });
+
+      try {
+        const jsonQuery = getJsonQueryFromGraphQLQuery(query, metaConfig, variables);
+        res.json({ jsonQuery });
+      } catch (e: any) {
+        const stack = getEnv('devMode') ? e.stack : undefined;
+        this.logger('GraphQL to JSON error', {
+          error: (stack || e).toString(),
+        });
+        res.json({ jsonQuery: null });
+      }
+    }));
 
     app.post(
       `${this.basePath}/v1/cubesql`,
@@ -2422,6 +2424,20 @@ class ApiGateway {
     } catch (e: any) {
       this.handleError({
         e, context, query, res, requestStarted
+      });
+    }
+  }
+
+  public async unsubscribe({ context, res, unsubscribe }) {
+    try {
+      this.log({
+        type: 'Unsubscribe',
+      }, context);
+
+      await unsubscribe();
+    } catch (e: any) {
+      this.handleError({
+        e, context, res
       });
     }
   }

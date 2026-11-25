@@ -1,4 +1,4 @@
-FROM node:22.23.4-bookworm-slim AS builder
+FROM node:22.23.5-bookworm-slim AS builder
 
 WORKDIR /cube
 COPY . .
@@ -34,7 +34,7 @@ RUN find /cube/stacklet-patches -maxdepth 1 -name '*-dist' -type d | while read 
       rm -rf "$target" && cp -r "$d" "$target" || exit 1; \
     done && rm -rf /cube/stacklet-patches
 
-FROM node:22.23.4-bookworm-slim
+FROM node:22.23.5-bookworm-slim
 
 ARG IMAGE_VERSION=unknown
 
